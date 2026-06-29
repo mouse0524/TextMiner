@@ -1,23 +1,22 @@
 package extractor
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"textminer/pkg/logger"
 
 	goppt "github.com/KSpaceer/goppt"
 	gocatdoc "github.com/semvis123/go-catdoc"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/shakinm/xlsReader/xls"
 )
 
 func extractWordDocContent(filePath string) (string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return "", fmt.Errorf("打开DOC文件失败: %v", err)
+		return "", fmt.Errorf("打开DOC文件失败: %w", err)
 	}
 	defer file.Close()
 
@@ -25,12 +24,12 @@ func extractWordDocContent(filePath string) (string, error) {
 	if err != nil {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "File is encrypted") || strings.Contains(errMsg, "encrypted") {
-			return "", fmt.Errorf("文件已加密，无法提取内容")
+			return "", ErrEncrypted
 		}
 		if strings.Contains(errMsg, "fast-saved") && text != "" {
 			return text, nil
 		}
-		return "", fmt.Errorf("提取DOC内容失败: %v", err)
+		return "", fmt.Errorf("提取DOC内容失败: %w", err)
 	}
 
 	if text == "" {
@@ -43,7 +42,7 @@ func extractWordDocContent(filePath string) (string, error) {
 func extractExcelXlsContent(filePath string) (string, error) {
 	workbook, err := xls.OpenFile(filePath)
 	if err != nil {
-		return "", fmt.Errorf("打开XLS文件失败: %v", err)
+		return "", fmt.Errorf("打开XLS文件失败: %w", err)
 	}
 
 	var content strings.Builder
@@ -115,7 +114,7 @@ func extractPowerPointPptContentWithMmap(filePath string) (string, error) {
 func extractPptContent(filePath string, useMmap bool) (string, error) {
 	file, openErr := os.Open(filePath)
 	if openErr != nil {
-		return "", fmt.Errorf("打开PPT文件失败: %v", openErr)
+		return "", fmt.Errorf("打开PPT文件失败: %w", openErr)
 	}
 	defer file.Close()
 
@@ -173,38 +172,46 @@ func handlePptExtractionError(filePath string, text string, err error) (string, 
 	}
 	if strings.Contains(errMsg, "mismatch record type") {
 		logger.Warnf("PPT文件可能已加密，返回错误: %s", filePath)
-		return "", fmt.Errorf("文件已加密，无法提取内容")
+		return "", ErrEncrypted
 	}
 	logger.Errorf("提取PPT内容失败: %v", err)
-	return "", fmt.Errorf("提取PPT内容失败: %v", err)
+	return "", fmt.Errorf("提取PPT内容失败: %w", err)
 }
 
-var xlsContentCache sync.Map
+var xlsContentCache *lru.Cache[string, string]
+
+func init() {
+	xlsContentCache, _ = lru.New[string, string](128)
+}
 
 func extractExcelXlsContentWithCache(filePath string) (string, error) {
-	return extractWithCache(&xlsContentCache, filePath, extractExcelXlsContent)
+	return extractWithCache(xlsContentCache, filePath, extractExcelXlsContent)
 }
 
 func ClearXLSCache() {
-	clearCache(&xlsContentCache)
+	clearCache(xlsContentCache)
 }
 
 func GetXLSCacheSize() int {
-	return getCacheSize(&xlsContentCache)
+	return getCacheSize(xlsContentCache)
 }
 
-var pptContentCache sync.Map
+var pptContentCache *lru.Cache[string, string]
+
+func init() {
+	pptContentCache, _ = lru.New[string, string](128)
+}
 
 func extractPowerPointPptContentWithCache(filePath string) (string, error) {
-	return extractWithCache(&pptContentCache, filePath, extractPowerPointPptContentWithMmap)
+	return extractWithCache(pptContentCache, filePath, extractPowerPointPptContentWithMmap)
 }
 
 func ClearPPTCache() {
-	clearCache(&pptContentCache)
+	clearCache(pptContentCache)
 }
 
 func GetPPTCacheSize() int {
-	return getCacheSize(&pptContentCache)
+	return getCacheSize(pptContentCache)
 }
 
 type WordDocumentExtractor struct{}
@@ -245,12 +252,12 @@ func (e *PowerPointPptExtractor) Extract(filePath string, enableOcr bool) (*Extr
 			FileName:     filepath.Base(filePath),
 			FileType:     "application/vnd.ms-powerpoint",
 			FileSize:     0,
-			Status:       "failed",
+			Status:       StatusFailed,
 			Content:      "",
 			ErrorMessage: "文件已加密，无法提取内容",
 			IsEncrypt:    1,
 			ExecuteTime:  "0.0000",
-		}, errors.New("文件已加密，无法提取内容")
+		}, ErrEncrypted
 	}
 
 	return extractWithFileCheck(filePath, extractPowerPointPptContentWithCache)

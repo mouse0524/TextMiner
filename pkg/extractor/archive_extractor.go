@@ -16,6 +16,8 @@ import (
 	"github.com/kdomanski/iso9660"
 	"github.com/nwaples/rardecode/v2"
 	"github.com/ulikunitz/xz"
+
+	"textminer/pkg/logger"
 )
 
 const (
@@ -51,24 +53,22 @@ func (e *ArchiveExtractor) Extract(filePath string, enableOcr bool) (*ExtractRes
 		fileSize = fileInfo.Size()
 	}
 
-	ext := strings.ToLower(filepath.Ext(filePath))
-
 	detector := GetFileTypeDetector()
 	_, mimeType, err := detector.GetDetailedInfo(filePath)
 	if err != nil || mimeType == "" {
-		mimeType = MapExtensionToMimeType(ext[1:])
+		mimeType = resolveMimeType(filePath)
 	}
 
 	result := &ExtractResult{
 		FileName: filepath.Base(filePath),
 		FileType: mimeType,
 		FileSize: fileSize,
-		Status:   "success",
+		Status:   StatusSuccess,
 	}
 
 	files, err := e.extractArchive(filePath, 0)
 	if err != nil {
-		result.Status = "failed"
+		result.Status = StatusFailed
 		result.ErrorMessage = fmt.Sprintf("解压失败: %v", err)
 		return result, err
 	}
@@ -127,11 +127,17 @@ func (e *ArchiveExtractor) extractArchive(filePath string, depth int) ([]Archive
 func (e *ArchiveExtractor) extractZip(filePath string, depth int) ([]ArchiveFile, error) {
 	reader, err := zip.OpenReader(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("打开ZIP文件失败: %v", err)
+		return nil, fmt.Errorf("打开ZIP文件失败: %w", err)
 	}
 	defer reader.Close()
 
+	// Zip Bomb 防护：单层文件数限制
+	if err := CheckArchiveFileCount(len(reader.File)); err != nil {
+		return nil, err
+	}
+
 	var files []ArchiveFile
+	var totalUncompressed int64
 
 	for _, file := range reader.File {
 		if file.FileInfo().IsDir() {
@@ -144,16 +150,13 @@ func (e *ArchiveExtractor) extractZip(filePath string, depth int) ([]ArchiveFile
 			continue
 		}
 
-		rc, err := file.Open()
+		// SafeReadZipEntry 内置 Zip Slip 校验与 Zip Bomb 防护
+		safeName, content, err := SafeReadZipEntry(file, &totalUncompressed)
 		if err != nil {
+			logger.Warnf("跳过压缩包内文件 %s: %v", file.Name, err)
 			continue
 		}
-
-		content, err := io.ReadAll(rc)
-		rc.Close()
-		if err != nil {
-			continue
-		}
+		_ = safeName
 
 		archiveFile := ArchiveFile{
 			Name:     file.Name,
@@ -186,21 +189,22 @@ func (e *ArchiveExtractor) extractZip(filePath string, depth int) ([]ArchiveFile
 func (e *ArchiveExtractor) extract7z(filePath string, depth int) ([]ArchiveFile, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("打开7z文件失败: %v", err)
+		return nil, fmt.Errorf("打开7z文件失败: %w", err)
 	}
 	defer file.Close()
 
 	fileInfo, err := file.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("获取文件信息失败: %v", err)
+		return nil, fmt.Errorf("获取文件信息失败: %w", err)
 	}
 
 	reader, err := sevenzip.NewReader(file, fileInfo.Size())
 	if err != nil {
-		return nil, fmt.Errorf("创建7z读取器失败: %v", err)
+		return nil, fmt.Errorf("创建7z读取器失败: %w", err)
 	}
 
 	var files []ArchiveFile
+	var totalUncompressed int64
 
 	for _, file := range reader.File {
 		if file.Mode().IsDir() {
@@ -218,9 +222,10 @@ func (e *ArchiveExtractor) extract7z(filePath string, depth int) ([]ArchiveFile,
 			continue
 		}
 
-		content, err := io.ReadAll(rc)
+		content, err := SafeReadLimited(rc, &totalUncompressed)
 		rc.Close()
 		if err != nil {
+			logger.Warnf("跳过7z内文件 %s: %v", file.Name, err)
 			continue
 		}
 
@@ -255,16 +260,17 @@ func (e *ArchiveExtractor) extract7z(filePath string, depth int) ([]ArchiveFile,
 func (e *ArchiveExtractor) extractRar(filePath string, depth int) ([]ArchiveFile, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("打开RAR文件失败: %v", err)
+		return nil, fmt.Errorf("打开RAR文件失败: %w", err)
 	}
 	defer file.Close()
 
 	reader, err := rardecode.NewReader(file)
 	if err != nil {
-		return nil, fmt.Errorf("创建RAR读取器失败: %v", err)
+		return nil, fmt.Errorf("创建RAR读取器失败: %w", err)
 	}
 
 	var files []ArchiveFile
+	var totalUncompressed int64
 
 	for {
 		header, err := reader.Next()
@@ -273,7 +279,7 @@ func (e *ArchiveExtractor) extractRar(filePath string, depth int) ([]ArchiveFile
 		}
 		if err != nil {
 			if strings.Contains(err.Error(), "password") || strings.Contains(err.Error(), "encrypted") {
-				return nil, fmt.Errorf("文件已加密，无法提取内容")
+				return nil, ErrEncrypted
 			}
 			continue
 		}
@@ -288,11 +294,12 @@ func (e *ArchiveExtractor) extractRar(filePath string, depth int) ([]ArchiveFile
 			continue
 		}
 
-		content, err := io.ReadAll(reader)
+		content, err := SafeReadLimited(reader, &totalUncompressed)
 		if err != nil {
 			if strings.Contains(err.Error(), "password") || strings.Contains(err.Error(), "encrypted") {
-				return nil, fmt.Errorf("文件已加密，无法提取内容")
+				return nil, ErrEncrypted
 			}
+			logger.Warnf("跳过RAR内文件 %s: %v", header.Name, err)
 			continue
 		}
 
@@ -327,13 +334,14 @@ func (e *ArchiveExtractor) extractRar(filePath string, depth int) ([]ArchiveFile
 func (e *ArchiveExtractor) extractTar(filePath string, depth int) ([]ArchiveFile, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("打开TAR文件失败: %v", err)
+		return nil, fmt.Errorf("打开TAR文件失败: %w", err)
 	}
 	defer file.Close()
 
 	reader := tar.NewReader(file)
 
 	var files []ArchiveFile
+	var totalUncompressed int64
 
 	for {
 		header, err := reader.Next()
@@ -354,8 +362,9 @@ func (e *ArchiveExtractor) extractTar(filePath string, depth int) ([]ArchiveFile
 			continue
 		}
 
-		content, err := io.ReadAll(reader)
+		content, err := SafeReadLimited(reader, &totalUncompressed)
 		if err != nil {
+			logger.Warnf("跳过TAR内文件 %s: %v", header.Name, err)
 			continue
 		}
 
@@ -390,19 +399,20 @@ func (e *ArchiveExtractor) extractTar(filePath string, depth int) ([]ArchiveFile
 func (e *ArchiveExtractor) extractGz(filePath string, depth int) ([]ArchiveFile, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("打开GZ文件失败: %v", err)
+		return nil, fmt.Errorf("打开GZ文件失败: %w", err)
 	}
 	defer file.Close()
 
 	reader, err := gzip.NewReader(file)
 	if err != nil {
-		return nil, fmt.Errorf("创建GZ读取器失败: %v", err)
+		return nil, fmt.Errorf("创建GZ读取器失败: %w", err)
 	}
 	defer reader.Close()
 
-	content, err := io.ReadAll(reader)
+	var totalUncompressed int64
+	content, err := SafeReadLimited(reader, &totalUncompressed)
 	if err != nil {
-		return nil, fmt.Errorf("读取GZ内容失败: %v", err)
+		return nil, err
 	}
 
 	baseName := filepath.Base(filePath)
@@ -430,19 +440,20 @@ func (e *ArchiveExtractor) extractGz(filePath string, depth int) ([]ArchiveFile,
 func (e *ArchiveExtractor) extractTarGz(filePath string, depth int) ([]ArchiveFile, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("打开TAR.GZ文件失败: %v", err)
+		return nil, fmt.Errorf("打开TAR.GZ文件失败: %w", err)
 	}
 	defer file.Close()
 
 	gzReader, err := gzip.NewReader(file)
 	if err != nil {
-		return nil, fmt.Errorf("创建GZ读取器失败: %v", err)
+		return nil, fmt.Errorf("创建GZ读取器失败: %w", err)
 	}
 	defer gzReader.Close()
 
 	tarReader := tar.NewReader(gzReader)
 
 	var files []ArchiveFile
+	var totalUncompressed int64
 
 	for {
 		header, err := tarReader.Next()
@@ -463,8 +474,9 @@ func (e *ArchiveExtractor) extractTarGz(filePath string, depth int) ([]ArchiveFi
 			continue
 		}
 
-		content, err := io.ReadAll(tarReader)
+		content, err := SafeReadLimited(tarReader, &totalUncompressed)
 		if err != nil {
+			logger.Warnf("跳过TAR.GZ内文件 %s: %v", header.Name, err)
 			continue
 		}
 
@@ -610,7 +622,10 @@ func (e *ArchiveExtractor) extractFileContent(content []byte, fileName string) s
 		return e.tryExtractTextContent(content, fileName)
 	}
 
-	ext = ext[1:]
+	if ext == "" {
+		return e.tryExtractTextContent(content, fileName)
+	}
+	ext = strings.TrimPrefix(ext, ".")
 
 	extractor, err := NewExtractorByType(ext)
 	if err != nil {
@@ -661,15 +676,22 @@ func (e *ArchiveExtractor) isPrintableASCII(s string) bool {
 		return false
 	}
 
+	// 限定取样到前 1000 字节，避免长字符串扫描；同时让分母与分子保持一致
+	limit := len(s)
+	if limit > 1000 {
+		limit = 1000
+	}
+	sample := s[:limit]
+
 	printableCount := 0
-	for i := 0; i < len(s) && i < 1000; i++ {
-		c := s[i]
+	for i := 0; i < len(sample); i++ {
+		c := sample[i]
 		if (c >= 32 && c <= 126) || c == '\n' || c == '\r' || c == '\t' {
 			printableCount++
 		}
 	}
 
-	return printableCount > len(s)*8/10
+	return printableCount*10 >= len(sample)*8
 }
 
 // detectFileType 根据文件内容检测文件类型
@@ -787,15 +809,16 @@ func NewTarGzExtractor() *TarGzExtractor {
 func (e *ArchiveExtractor) extractBz2(filePath string, depth int) ([]ArchiveFile, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("打开BZ2文件失败: %v", err)
+		return nil, fmt.Errorf("打开BZ2文件失败: %w", err)
 	}
 	defer file.Close()
 
 	reader := bzip2.NewReader(file)
 
-	content, err := io.ReadAll(reader)
+	var totalUncompressed int64
+	content, err := SafeReadLimited(reader, &totalUncompressed)
 	if err != nil {
-		return nil, fmt.Errorf("读取BZ2内容失败: %v", err)
+		return nil, err
 	}
 
 	baseName := filepath.Base(filePath)
@@ -823,18 +846,19 @@ func (e *ArchiveExtractor) extractBz2(filePath string, depth int) ([]ArchiveFile
 func (e *ArchiveExtractor) extractXz(filePath string, depth int) ([]ArchiveFile, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("打开XZ文件失败: %v", err)
+		return nil, fmt.Errorf("打开XZ文件失败: %w", err)
 	}
 	defer file.Close()
 
 	reader, err := xz.NewReader(file)
 	if err != nil {
-		return nil, fmt.Errorf("创建XZ读取器失败: %v", err)
+		return nil, fmt.Errorf("创建XZ读取器失败: %w", err)
 	}
 
-	content, err := io.ReadAll(reader)
+	var totalUncompressed int64
+	content, err := SafeReadLimited(reader, &totalUncompressed)
 	if err != nil {
-		return nil, fmt.Errorf("读取XZ内容失败: %v", err)
+		return nil, err
 	}
 
 	baseName := filepath.Base(filePath)
@@ -861,18 +885,19 @@ func (e *ArchiveExtractor) extractXz(filePath string, depth int) ([]ArchiveFile,
 func (e *ArchiveExtractor) extractTarXz(filePath string, depth int) ([]ArchiveFile, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("打开TAR.XZ文件失败: %v", err)
+		return nil, fmt.Errorf("打开TAR.XZ文件失败: %w", err)
 	}
 	defer file.Close()
 
 	xzReader, err := xz.NewReader(file)
 	if err != nil {
-		return nil, fmt.Errorf("创建XZ读取器失败: %v", err)
+		return nil, fmt.Errorf("创建XZ读取器失败: %w", err)
 	}
 
 	tarReader := tar.NewReader(xzReader)
 
 	var files []ArchiveFile
+	var totalUncompressed int64
 
 	for {
 		header, err := tarReader.Next()
@@ -893,8 +918,9 @@ func (e *ArchiveExtractor) extractTarXz(filePath string, depth int) ([]ArchiveFi
 			continue
 		}
 
-		content, err := io.ReadAll(tarReader)
+		content, err := SafeReadLimited(tarReader, &totalUncompressed)
 		if err != nil {
+			logger.Warnf("跳过TAR.XZ内文件 %s: %v", header.Name, err)
 			continue
 		}
 
@@ -929,7 +955,7 @@ func (e *ArchiveExtractor) extractTarXz(filePath string, depth int) ([]ArchiveFi
 func (e *ArchiveExtractor) extractRpm(filePath string, depth int) ([]ArchiveFile, error) {
 	pkg, err := rpm.Open(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("打开RPM文件失败: %v", err)
+		return nil, fmt.Errorf("打开RPM文件失败: %w", err)
 	}
 
 	var info strings.Builder
@@ -987,7 +1013,7 @@ func (e *ArchiveExtractor) extractRpm(filePath string, depth int) ([]ArchiveFile
 func (e *ArchiveExtractor) extractIso(filePath string, depth int) ([]ArchiveFile, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("打开ISO文件失败: %v", err)
+		return nil, fmt.Errorf("打开ISO文件失败: %w", err)
 	}
 	defer file.Close()
 
@@ -1062,6 +1088,8 @@ func (e *ArchiveExtractor) extractIsoDirectory(dir *iso9660.File, files *[]Archi
 		return err
 	}
 
+	var totalUncompressed int64
+
 	for _, child := range children {
 		fullPath := filepath.Join(path, child.Name())
 
@@ -1078,9 +1106,9 @@ func (e *ArchiveExtractor) extractIsoDirectory(dir *iso9660.File, files *[]Archi
 				continue
 			}
 		} else {
-			// 读取文件内容
+			// 读取文件内容（带 Zip Bomb 防护）
 			reader := child.Reader()
-			contentBytes, err := io.ReadAll(reader)
+			contentBytes, err := SafeReadLimited(reader, &totalUncompressed)
 			var content string
 
 			if err != nil {
@@ -1105,7 +1133,7 @@ func (e *ArchiveExtractor) extractIsoDirectory(dir *iso9660.File, files *[]Archi
 func (e *ArchiveExtractor) extractTarBz2(filePath string, depth int) ([]ArchiveFile, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("打开TAR.BZ2文件失败: %v", err)
+		return nil, fmt.Errorf("打开TAR.BZ2文件失败: %w", err)
 	}
 	defer file.Close()
 
@@ -1114,6 +1142,7 @@ func (e *ArchiveExtractor) extractTarBz2(filePath string, depth int) ([]ArchiveF
 	tarReader := tar.NewReader(bz2Reader)
 
 	var files []ArchiveFile
+	var totalUncompressed int64
 
 	for {
 		header, err := tarReader.Next()
@@ -1134,8 +1163,9 @@ func (e *ArchiveExtractor) extractTarBz2(filePath string, depth int) ([]ArchiveF
 			continue
 		}
 
-		content, err := io.ReadAll(tarReader)
+		content, err := SafeReadLimited(tarReader, &totalUncompressed)
 		if err != nil {
+			logger.Warnf("跳过TAR.BZ2内文件 %s: %v", header.Name, err)
 			continue
 		}
 

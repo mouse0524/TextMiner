@@ -25,30 +25,28 @@ func (e *PdfExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult,
 		fileSize = fileInfo.Size()
 	}
 
-	ext := strings.ToLower(filepath.Ext(filePath))
-
 	detector := GetFileTypeDetector()
 	_, mimeType, err := detector.GetDetailedInfo(filePath)
 	if err != nil || mimeType == "" {
-		mimeType = MapExtensionToMimeType(ext[1:])
+		mimeType = resolveMimeType(filePath)
 	}
 
 	result := &ExtractResult{
 		FileName: filepath.Base(filePath),
 		FileType: mimeType,
 		FileSize: fileSize,
-		Status:   "success",
+		Status:   StatusSuccess,
 	}
 
 	if !isFileAccessible(filePath) {
-		result.Status = "failed"
+		result.Status = StatusFailed
 		result.ErrorMessage = "文件不存在或无法访问"
 		return result, fmt.Errorf("文件不存在或无法访问")
 	}
 
 	file, err := os.Open(filePath)
 	if err != nil {
-		result.Status = "failed"
+		result.Status = StatusFailed
 		result.ErrorMessage = fmt.Sprintf("打开PDF文件失败: %v", err)
 		return result, err
 	}
@@ -56,14 +54,14 @@ func (e *PdfExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult,
 
 	pdfReader, err := model.NewPdfReader(file)
 	if err != nil {
-		result.Status = "failed"
+		result.Status = StatusFailed
 		result.ErrorMessage = fmt.Sprintf("创建PDF读取器失败: %v", err)
 		return result, err
 	}
 
 	numPages, err := pdfReader.GetNumPages()
 	if err != nil {
-		result.Status = "failed"
+		result.Status = StatusFailed
 		result.ErrorMessage = fmt.Sprintf("获取PDF页数失败: %v", err)
 		return result, err
 	}
@@ -149,7 +147,7 @@ func (e *PdfExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult,
 
 	result.Content = strings.TrimSpace(builder.String())
 	if result.Content == "" {
-		result.Status = "failed"
+		result.Status = StatusFailed
 		result.ErrorMessage = "未提取到文本内容"
 		return result, fmt.Errorf("未提取到文本内容")
 	}

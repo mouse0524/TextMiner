@@ -14,6 +14,17 @@ var (
 	logDir   string
 )
 
+// MaxLogMessageLength 单条日志最大允许字节数，防止恶意超长日志耗尽磁盘。
+const MaxLogMessageLength = 4096
+
+// sanitize 截断超过 MaxLogMessageLength 的日志消息。
+func sanitize(message string) string {
+	if len(message) > MaxLogMessageLength {
+		return message[:MaxLogMessageLength] + "...[truncated]"
+	}
+	return message
+}
+
 type Logger struct {
 	mu          sync.Mutex
 	currentDate string
@@ -131,7 +142,7 @@ func (l *Logger) write(level, message string) error {
 	}
 
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	logLine := fmt.Sprintf("[%s] [%s] %s\n", timestamp, level, message)
+	logLine := fmt.Sprintf("[%s] [%s] %s\n", timestamp, level, sanitize(message))
 
 	_, err := l.currentFile.WriteString(logLine)
 	return err

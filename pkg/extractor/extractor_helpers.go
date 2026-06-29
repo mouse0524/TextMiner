@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"sync"
 	"textminer/pkg/logger"
 	"time"
+
+	lru "github.com/hashicorp/golang-lru/v2"
 )
 
 type extractFunc func(filePath string) (string, error)
@@ -51,7 +53,7 @@ func newSuccessResult(ctx *ExtractContext, content string) *ExtractResult {
 		FileName: ctx.FileName,
 		FileType: ctx.FileType,
 		FileSize: ctx.FileSize,
-		Status:   "success",
+		Status:   StatusSuccess,
 		Content:  content,
 	}
 }
@@ -61,7 +63,7 @@ func newErrorResult(ctx *ExtractContext, errMsg string) *ExtractResult {
 		FileName:     ctx.FileName,
 		FileType:     ctx.FileType,
 		FileSize:     ctx.FileSize,
-		Status:       "failed",
+		Status:       StatusFailed,
 		ErrorMessage: errMsg,
 	}
 }
@@ -78,23 +80,21 @@ func newFileAccessErrorResult(filePath string) *ExtractResult {
 		FileName:     filepath.Base(filePath),
 		FileType:     mimeType,
 		FileSize:     0,
-		Status:       "failed",
+		Status:       StatusFailed,
 		ErrorMessage: "文件不存在或无法访问",
 	}
 }
 
-func extractWithCache(cache *sync.Map, filePath string, extractor extractFunc) (string, error) {
+func extractWithCache(cache *lru.Cache[string, string], filePath string, extractor extractFunc) (string, error) {
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {
 		return "", err
 	}
 
-	cacheKey := fmt.Sprintf("%s:%d", filePath, fileInfo.ModTime().UnixNano())
-	if cached, ok := cache.Load(cacheKey); ok {
-		if content, ok := cached.(string); ok {
-			logger.Infof("使用缓存内容: %s", filePath)
-			return content, nil
-		}
+	cacheKey := buildCacheKey(filePath, fileInfo.ModTime().UnixNano(), fileInfo.Size(), false)
+	if cached, ok := cache.Get(cacheKey); ok {
+		logger.Infof("使用缓存内容: %s", filePath)
+		return cached, nil
 	}
 
 	startTime := time.Now()
@@ -105,22 +105,20 @@ func extractWithCache(cache *sync.Map, filePath string, extractor extractFunc) (
 	elapsed := time.Since(startTime)
 	logger.Infof("提取完成: %s, 耗时: %v, 内容长度: %d", filePath, elapsed, len(content))
 
-	cache.Store(cacheKey, content)
+	cache.Add(cacheKey, content)
 	return content, nil
 }
 
-func extractWithCacheAndOcr(cache *sync.Map, filePath string, enableOcr bool, extractor extractFuncWithOcr) (string, error) {
+func extractWithCacheAndOcr(cache *lru.Cache[string, string], filePath string, enableOcr bool, extractor extractFuncWithOcr) (string, error) {
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {
 		return "", err
 	}
 
-	cacheKey := fmt.Sprintf("%s:%d:%v", filePath, fileInfo.ModTime().UnixNano(), enableOcr)
-	if cached, ok := cache.Load(cacheKey); ok {
-		if content, ok := cached.(string); ok {
-			logger.Infof("使用缓存内容: %s", filePath)
-			return content, nil
-		}
+	cacheKey := buildCacheKey(filePath, fileInfo.ModTime().UnixNano(), fileInfo.Size(), enableOcr)
+	if cached, ok := cache.Get(cacheKey); ok {
+		logger.Infof("使用缓存内容: %s", filePath)
+		return cached, nil
 	}
 
 	startTime := time.Now()
@@ -131,24 +129,31 @@ func extractWithCacheAndOcr(cache *sync.Map, filePath string, enableOcr bool, ex
 	elapsed := time.Since(startTime)
 	logger.Infof("提取完成: %s, 耗时: %v, 内容长度: %d", filePath, elapsed, len(content))
 
-	cache.Store(cacheKey, content)
+	cache.Add(cacheKey, content)
 	return content, nil
 }
 
-func clearCache(cache *sync.Map) {
-	cache.Range(func(key, value interface{}) bool {
-		cache.Delete(key)
-		return true
-	})
+// buildCacheKey 高效构造 cache key：path + mtime + size + ocr flag。
+// 使用 strings.Builder 避免 fmt.Sprintf 的反射开销。
+func buildCacheKey(path string, mtimeNano, size int64, ocr bool) string {
+	var b strings.Builder
+	b.Grow(len(path) + 32)
+	b.WriteString(path)
+	b.WriteByte(':')
+	b.WriteString(strconv.FormatInt(mtimeNano, 10))
+	b.WriteByte(':')
+	b.WriteString(strconv.FormatInt(size, 10))
+	b.WriteByte(':')
+	b.WriteString(strconv.FormatBool(ocr))
+	return b.String()
 }
 
-func getCacheSize(cache *sync.Map) int {
-	size := 0
-	cache.Range(func(key, value interface{}) bool {
-		size++
-		return true
-	})
-	return size
+func clearCache(cache *lru.Cache[string, string]) {
+	cache.Purge()
+}
+
+func getCacheSize(cache *lru.Cache[string, string]) int {
+	return cache.Len()
 }
 
 func extractWithFileCheck(filePath string, extractor extractFunc) (*ExtractResult, error) {
@@ -168,4 +173,14 @@ func extractWithFileCheck(filePath string, extractor extractFunc) (*ExtractResul
 func isFileAccessible(filePath string) bool {
 	_, err := os.Stat(filePath)
 	return err == nil
+}
+
+// resolveMimeType 安全解析文件的 MIME 类型：去除扩展名前缀的 `.`，
+// 避免 ext[1:] 在无扩展名时 panic；空扩展名回退为 application/octet-stream。
+func resolveMimeType(filePath string) string {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	if ext == "" {
+		return "application/octet-stream"
+	}
+	return MapExtensionToMimeType(strings.TrimPrefix(ext, "."))
 }

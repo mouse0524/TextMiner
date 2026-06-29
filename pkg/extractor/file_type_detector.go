@@ -54,53 +54,54 @@ func (d *FileTypeDetector) DetectFileTypeByExtension(filePath string) string {
 	return strings.TrimPrefix(ext, ".")
 }
 
+// 类别集合：避免每次 GetDetailedInfo 重新构造，提升热路径性能
+var (
+	officeExtensionsMap = map[string]struct{}{
+		"doc": {}, "dot": {}, "wps": {}, "wpt": {},
+		"docx": {}, "dotx": {}, "dotm": {}, "docm": {},
+		"xls": {}, "xlt": {}, "et": {}, "ett": {}, "xlsb": {},
+		"xlsx": {}, "xlsm": {}, "xltx": {}, "xltm": {}, "xlam": {},
+		"ppt": {}, "pot": {}, "pps": {}, "dps": {}, "dpt": {}, "vsd": {},
+		"pptx": {}, "potx": {}, "potm": {}, "ppsm": {}, "pptm": {}, "ppsx": {}, "vsdx": {},
+		"odt": {},
+	}
+	videoExtensionsMap = map[string]struct{}{
+		"swf": {}, "mp4": {}, "mpg": {}, "wmv": {}, "3g2": {}, "3gp": {}, "asf": {}, "avi": {}, "dat": {},
+		"dv": {}, "f4v": {}, "flv": {}, "hevc": {}, "m2ts": {}, "m2v": {}, "m4v": {}, "mjpeg": {},
+		"mkv": {}, "mov": {}, "mpeg": {}, "mts": {}, "mxf": {}, "ogv": {}, "rm": {}, "rmvb": {},
+		"vob": {}, "webm": {}, "wtv": {},
+	}
+	audioExtensionsMap = map[string]struct{}{
+		"mid": {}, "midi": {}, "wav": {}, "ogg": {}, "oga": {}, "ogx": {}, "mp3": {}, "8svx": {}, "aac": {}, "ac3": {},
+		"aiff": {}, "aif": {}, "amb": {}, "amr": {}, "au": {}, "avr": {}, "caf": {}, "cdda": {},
+		"cvs": {}, "cvsd": {}, "cvu": {}, "dts": {}, "dvms": {}, "fap": {}, "flac": {}, "fssd": {},
+		"gsrt": {}, "hcom": {}, "htk": {}, "ima": {}, "ircam": {}, "m4a": {}, "m4b": {}, "m4p": {},
+		"m4r": {}, "maud": {}, "mmf": {}, "mp2": {}, "nist": {}, "opus": {}, "paf": {}, "pcma": {},
+		"pcmu": {}, "prc": {}, "pvf": {}, "ra": {}, "ram": {}, "sd2": {}, "sln": {}, "smp": {},
+		"snd": {}, "sndr": {}, "sndt": {}, "sou": {}, "sph": {}, "spx": {}, "tta": {}, "txw": {},
+		"vms": {}, "voc": {}, "vox": {}, "w64": {}, "wma": {}, "wv": {}, "wve": {},
+	}
+)
+
 // GetDetailedInfo 获取文件类型的详细信息
 func (d *FileTypeDetector) GetDetailedInfo(filePath string) (string, string, error) {
 	var fileType, mimeType string
 
 	extType := d.DetectFileTypeByExtension(filePath)
 
-	officeExtensions := map[string]bool{
-		"doc": true, "dot": true, "wps": true, "wpt": true,
-		"docx": true, "dotx": true, "dotm": true, "docm": true,
-		"xls": true, "xlt": true, "et": true, "ett": true, "xlsb": true,
-		"xlsx": true, "xlsm": true, "xltx": true, "xltm": true, "xlam": true,
-		"ppt": true, "pot": true, "pps": true, "dps": true, "dpt": true, "vsd": true,
-		"pptx": true, "potx": true, "potm": true, "ppsm": true, "pptm": true, "ppsx": true, "vsdx": true,
-		"odt": true,
-	}
-
-	if officeExtensions[extType] {
+	if _, ok := officeExtensionsMap[extType]; ok {
 		fileType = extType
 		mimeType = MapExtensionToMimeType(extType)
 		return fileType, mimeType, nil
 	}
 
-	videoExtensions := map[string]bool{
-		"swf": true, "mp4": true, "mpg": true, "wmv": true, "3g2": true, "3gp": true, "asf": true, "avi": true, "dat": true,
-		"dv": true, "f4v": true, "flv": true, "hevc": true, "m2ts": true, "m2v": true, "m4v": true, "mjpeg": true,
-		"mkv": true, "mov": true, "mpeg": true, "mts": true, "mxf": true, "ogv": true, "rm": true, "rmvb": true,
-		"vob": true, "webm": true, "wtv": true,
-	}
-
-	if videoExtensions[extType] {
+	if _, ok := videoExtensionsMap[extType]; ok {
 		fileType = extType
 		mimeType = MapExtensionToMimeType(extType)
 		return fileType, mimeType, nil
 	}
 
-	audioExtensions := map[string]bool{
-		"mid": true, "midi": true, "wav": true, "ogg": true, "oga": true, "ogx": true, "mp3": true, "8svx": true, "aac": true, "ac3": true,
-		"aiff": true, "aif": true, "amb": true, "amr": true, "au": true, "avr": true, "caf": true, "cdda": true,
-		"cvs": true, "cvsd": true, "cvu": true, "dts": true, "dvms": true, "fap": true, "flac": true, "fssd": true,
-		"gsrt": true, "hcom": true, "htk": true, "ima": true, "ircam": true, "m4a": true, "m4b": true, "m4p": true,
-		"m4r": true, "maud": true, "mmf": true, "mp2": true, "nist": true, "opus": true, "paf": true, "pcma": true,
-		"pcmu": true, "prc": true, "pvf": true, "ra": true, "ram": true, "sd2": true, "sln": true, "smp": true,
-		"snd": true, "sndr": true, "sndt": true, "sou": true, "sph": true, "spx": true, "tta": true, "txw": true,
-		"vms": true, "voc": true, "vox": true, "w64": true, "wma": true, "wv": true, "wve": true,
-	}
-
-	if audioExtensions[extType] {
+	if _, ok := audioExtensionsMap[extType]; ok {
 		fileType = extType
 		mimeType = MapExtensionToMimeType(extType)
 		return fileType, mimeType, nil
@@ -111,9 +112,7 @@ func (d *FileTypeDetector) GetDetailedInfo(filePath string) (string, string, err
 		if err == nil {
 			fileType = magika.MapContentTypeToFileType(ct)
 			mimeType = ct.MimeType
-			// 检查Magika返回的文件类型是否支持
 			if !IsFileTypeSupported(fileType) {
-				// 如果不支持，回退到使用文件扩展名
 				fileType = extType
 				mimeType = MapExtensionToMimeType(fileType)
 			}
@@ -126,390 +125,222 @@ func (d *FileTypeDetector) GetDetailedInfo(filePath string) (string, string, err
 	return fileType, mimeType, nil
 }
 
-// MapExtensionToMimeType 将文件扩展名映射到MIME类型
+// extToMimeMap 扩展名到 MIME 类型的预编译映射（替代原先 O(N) 的 switch-case）。
+// 多个扩展名映射到同一 MIME 时分别列出，便于维护。
+var extToMimeMap = map[string]string{
+	"doc":      "application/msword",
+	"docx":     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	"odt":      "application/vnd.oasis.opendocument.text",
+	"xls":      "application/vnd.ms-excel",
+	"xlsx":     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	"xlsb":     "application/vnd.ms-excel.sheet.binary.macroEnabled.12",
+	"xlt":      "application/vnd.ms-excel",
+	"xltx":     "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+	"xltm":     "application/vnd.ms-excel.template.macroEnabled.12",
+	"xlam":     "application/vnd.ms-excel.addin.macroEnabled.12",
+	"ppt":      "application/vnd.ms-powerpoint",
+	"pptx":     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	"ppsx":     "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
+	"vsd":      "application/vnd.visio",
+	"vsdx":     "application/vnd.visio",
+	"pdf":      "application/pdf",
+	"rtf":      "application/rtf",
+	"txt":      "text/plain",
+	"log":      "text/plain",
+	"csv":      "text/csv",
+	"ini":      "text/plain",
+	"zip":      "application/zip",
+	"7z":       "application/x-7z-compressed",
+	"rar":      "application/vnd.rar",
+	"tar":      "application/x-tar",
+	"gz":       "application/gzip",
+	"bz2":      "application/x-bzip2",
+	"xz":       "application/x-xz",
+	"tar.bz2":  "application/x-tar-bz2",
+	"tar.xz":   "application/x-tar-xz",
+	"rpm":      "application/x-rpm",
+	"iso":      "application/x-iso9660-image",
+	"tgz":      "application/x-tar-gz",
+	"tar.gz":   "application/x-tar-gz",
+	"exe":      "application/vnd.microsoft.portable-executable",
+	"dll":      "application/vnd.microsoft.portable-executable",
+	"sys":      "application/vnd.microsoft.portable-executable",
+	"so":       "application/x-sharedlib",
+	"dylib":    "application/x-mach-binary",
+	"png":      "image/png",
+	"jpg":      "image/jpeg",
+	"jpeg":     "image/jpeg",
+	"bmp":      "image/bmp",
+	"gif":      "image/gif",
+	"webp":     "image/webp",
+	"html":     "text/html",
+	"htm":      "text/html",
+	"css":      "text/css",
+	"js":       "application/javascript",
+	"ts":       "application/typescript",
+	"tsx":      "application/typescript",
+	"jsx":      "text/jsx",
+	"vue":      "text/x-vue",
+	"json":     "application/json",
+	"xml":      "application/xml",
+	"yaml":     "application/x-yaml",
+	"yml":      "application/x-yaml",
+	"mid":      "audio/midi",
+	"midi":     "audio/midi",
+	"wav":      "audio/wav",
+	"ogg":      "audio/ogg",
+	"oga":      "audio/ogg",
+	"ogx":      "audio/ogg",
+	"mp3":      "audio/mpeg",
+	"mp2":      "audio/mpeg",
+	"8svx":     "audio/x-8svx",
+	"aac":      "audio/aac",
+	"ac3":      "audio/ac3",
+	"aiff":     "audio/aiff",
+	"aif":      "audio/aiff",
+	"amb":      "audio/amb",
+	"amr":      "audio/amr",
+	"au":       "audio/basic",
+	"snd":      "audio/basic",
+	"avr":      "audio/x-avr",
+	"caf":      "audio/x-caf",
+	"cdda":     "audio/x-cdda",
+	"cvs":      "audio/x-cvs",
+	"cvsd":     "audio/x-cvs",
+	"cvu":      "audio/x-cvu",
+	"dts":      "audio/x-dts",
+	"dvms":     "audio/x-dvms",
+	"fap":      "audio/x-fap",
+	"flac":     "audio/flac",
+	"fssd":     "audio/x-fssd",
+	"gsrt":     "audio/x-gsrt",
+	"hcom":     "audio/x-hcom",
+	"htk":      "audio/x-htk",
+	"ima":      "audio/x-ima",
+	"ircam":    "audio/x-ircam",
+	"m4a":      "audio/mp4",
+	"m4b":      "audio/mp4",
+	"m4p":      "audio/mp4",
+	"m4r":      "audio/x-m4r",
+	"maud":     "audio/x-maud",
+	"mmf":      "audio/x-mmf",
+	"nist":     "audio/x-nist",
+	"opus":     "audio/opus",
+	"paf":      "audio/x-paf",
+	"pcma":     "audio/PCMA",
+	"pcmu":     "audio/PCMU",
+	"prc":      "audio/x-prc",
+	"pvf":      "audio/x-pvf",
+	"ra":       "audio/x-pn-realaudio",
+	"ram":      "audio/x-pn-realaudio",
+	"sd2":      "audio/x-sd2",
+	"sln":      "audio/x-sln",
+	"smp":      "audio/x-smp",
+	"sndr":     "audio/x-snd",
+	"sndt":     "audio/x-snd",
+	"sou":      "audio/x-sou",
+	"sph":      "audio/x-sph",
+	"spx":      "audio/x-speex",
+	"tta":      "audio/x-tta",
+	"txw":      "audio/x-txw",
+	"vms":      "audio/x-vms",
+	"voc":      "audio/x-voc",
+	"vox":      "audio/x-vox",
+	"w64":      "audio/x-w64",
+	"wma":      "audio/x-ms-wma",
+	"wv":       "audio/x-wavpack",
+	"wve":      "audio/x-wve",
+	"swf":      "application/x-shockwave-flash",
+	"mp4":      "video/mp4",
+	"m4v":      "video/mp4",
+	"mpg":      "video/mpeg",
+	"mpeg":     "video/mpeg",
+	"m2v":      "video/mpeg",
+	"wmv":      "video/x-ms-wmv",
+	"3g2":      "video/3gpp2",
+	"3gp":      "video/3gpp",
+	"asf":      "video/x-ms-asf",
+	"avi":      "video/x-msvideo",
+	"dat":      "video/mp2t",
+	"m2ts":     "video/mp2t",
+	"mts":      "video/mp2t",
+	"dv":       "video/dv",
+	"f4v":      "video/x-f4v",
+	"flv":      "video/x-flv",
+	"hevc":     "video/hevc",
+	"mjpeg":    "video/mjpeg",
+	"mkv":      "video/x-matroska",
+	"mov":      "video/quicktime",
+	"mxf":      "application/mxf",
+	"ogv":      "video/ogg",
+	"rm":       "application/vnd.rn-realmedia",
+	"rmvb":     "application/vnd.rn-realmedia-vbr",
+	"vob":      "video/x-ms-vob",
+	"webm":     "video/webm",
+	"wtv":      "video/x-ms-wtv",
+	"mscompress": "application/x-mscompress",
+	"hlp":      "application/winhlp",
+	"md":       "text/markdown",
+	"go":       "text/x-go",
+	"java":     "text/x-java-source",
+	"py":       "text/x-python",
+	"c":        "text/x-c",
+	"h":        "text/x-c",
+	"cpp":      "text/x-c++",
+	"hpp":      "text/x-c++",
+	"php":      "application/x-httpd-php",
+	"rb":       "text/x-ruby",
+	"vbs":      "text/vbscript",
+	"rs":       "text/x-rust",
+	"swift":    "text/x-swift",
+	"kt":       "text/x-kotlin",
+	"sql":      "application/sql",
+	"sh":       "application/x-sh",
+	"bash":     "application/x-sh",
+	"bat":      "application/x-bat",
+	"ps1":      "application/x-powershell",
+	"apk":      "application/vnd.android.package-archive",
+	"azw3":     "application/vnd.amazon.ebook",
+	"blend":    "application/x-blender",
+	"c4d":      "application/vnd.c4d",
+	"catpart":  "application/vnd.catia",
+	"chm":      "application/vnd.ms-htmlhelp",
+	"daf":      "application/x-daf",
+	"dbf":      "application/x-dbf",
+	"dcm":      "application/dicom",
+	"djvu":     "image/vnd.djvu",
+	"dsm":      "application/x-dsm",
+	"dwg":      "application/acad",
+	"dws":      "application/x-dws",
+	"dxf":      "application/dxf",
+	"eml":      "message/rfc822",
+	"mht":      "message/rfc822",
+	"mhtml":    "message/rfc822",
+	"fbx":      "application/x-fbx",
+	"in":       "text/plain",
+	"jar":      "application/java-archive",
+	"lrf":      "application/x-sony-bbeb",
+	"m3u":      "audio/x-mpegurl",
+	"m3u8":     "application/vnd.apple.mpegurl",
+	"max":      "application/x-3ds",
+	"prt":      "application/x-prt",
+	"sldasm":   "application/vnd.solidworks",
+	"sldprt":   "application/vnd.solidworks",
+	"snb":      "application/x-snb",
+	"stl":      "application/sla",
+	"tex":      "application/x-tex",
+	"vcf":      "text/vcard",
+	"x3d":      "model/x3d+xml",
+	"xpi":      "application/x-xpinstall",
+	"xps":      "application/vnd.ms-xpsdocument",
+}
+
+// MapExtensionToMimeType 将文件扩展名映射到MIME类型（O(1) map 查表）。
 func MapExtensionToMimeType(ext string) string {
-	switch ext {
-	case "doc":
-		return "application/msword"
-	case "docx":
-		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-	case "odt":
-		return "application/vnd.oasis.opendocument.text"
-	case "xls":
-		return "application/vnd.ms-excel"
-	case "xlsx":
-		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-	case "xlsb":
-		return "application/vnd.ms-excel.sheet.binary.macroEnabled.12"
-	case "xlt":
-		return "application/vnd.ms-excel"
-	case "xltx":
-		return "application/vnd.openxmlformats-officedocument.spreadsheetml.template"
-	case "xltm":
-		return "application/vnd.ms-excel.template.macroEnabled.12"
-	case "xlam":
-		return "application/vnd.ms-excel.addin.macroEnabled.12"
-	case "ppt":
-		return "application/vnd.ms-powerpoint"
-	case "pptx":
-		return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-	case "ppsx":
-		return "application/vnd.openxmlformats-officedocument.presentationml.slideshow"
-	case "vsd":
-		return "application/vnd.visio"
-	case "vsdx":
-		return "application/vnd.visio"
-	case "pdf":
-		return "application/pdf"
-	case "rtf":
-		return "application/rtf"
-	case "txt":
-		return "text/plain"
-	case "log":
-		return "text/plain"
-	case "csv":
-		return "text/csv"
-	case "ini":
-		return "text/plain"
-	case "zip":
-		return "application/zip"
-	case "7z":
-		return "application/x-7z-compressed"
-	case "rar":
-		return "application/vnd.rar"
-	case "tar":
-		return "application/x-tar"
-	case "gz":
-		return "application/gzip"
-	case "bz2":
-		return "application/x-bzip2"
-	case "xz":
-		return "application/x-xz"
-	case "tar.bz2":
-		return "application/x-tar-bz2"
-	case "tar.xz":
-		return "application/x-tar-xz"
-	case "rpm":
-		return "application/x-rpm"
-	case "iso":
-		return "application/x-iso9660-image"
-	case "tgz", "tar.gz":
-		return "application/x-tar-gz"
-	case "exe":
-		return "application/vnd.microsoft.portable-executable"
-	case "dll":
-		return "application/vnd.microsoft.portable-executable"
-	case "sys":
-		return "application/vnd.microsoft.portable-executable"
-	case "so":
-		return "application/x-sharedlib"
-	case "dylib":
-		return "application/x-mach-binary"
-	case "png":
-		return "image/png"
-	case "jpg", "jpeg":
-		return "image/jpeg"
-	case "bmp":
-		return "image/bmp"
-	case "gif":
-		return "image/gif"
-	case "webp":
-		return "image/webp"
-	case "html", "htm":
-		return "text/html"
-	case "css":
-		return "text/css"
-	case "js":
-		return "application/javascript"
-	case "ts":
-		return "application/typescript"
-	case "json":
-		return "application/json"
-	case "xml":
-		return "application/xml"
-	case "yaml", "yml":
-		return "application/x-yaml"
-	case "mid", "midi":
-		return "audio/midi"
-	case "wav":
-		return "audio/wav"
-	case "ogg", "oga", "ogx":
-		return "audio/ogg"
-	case "mp3":
-		return "audio/mpeg"
-	case "8svx":
-		return "audio/x-8svx"
-	case "aac":
-		return "audio/aac"
-	case "ac3":
-		return "audio/ac3"
-	case "aiff", "aif":
-		return "audio/aiff"
-	case "amb":
-		return "audio/amb"
-	case "amr":
-		return "audio/amr"
-	case "au":
-		return "audio/basic"
-	case "avr":
-		return "audio/x-avr"
-	case "caf":
-		return "audio/x-caf"
-	case "cdda":
-		return "audio/x-cdda"
-	case "cvs", "cvsd":
-		return "audio/x-cvs"
-	case "cvu":
-		return "audio/x-cvu"
-	case "dts":
-		return "audio/x-dts"
-	case "dvms":
-		return "audio/x-dvms"
-	case "fap":
-		return "audio/x-fap"
-	case "flac":
-		return "audio/flac"
-	case "fssd":
-		return "audio/x-fssd"
-	case "gsrt":
-		return "audio/x-gsrt"
-	case "hcom":
-		return "audio/x-hcom"
-	case "htk":
-		return "audio/x-htk"
-	case "ima":
-		return "audio/x-ima"
-	case "ircam":
-		return "audio/x-ircam"
-	case "m4a", "m4b", "m4p":
-		return "audio/mp4"
-	case "m4r":
-		return "audio/x-m4r"
-	case "maud":
-		return "audio/x-maud"
-	case "mmf":
-		return "audio/x-mmf"
-	case "mp2":
-		return "audio/mpeg"
-	case "nist":
-		return "audio/x-nist"
-	case "opus":
-		return "audio/opus"
-	case "paf":
-		return "audio/x-paf"
-	case "pcma":
-		return "audio/PCMA"
-	case "pcmu":
-		return "audio/PCMU"
-	case "prc":
-		return "audio/x-prc"
-	case "pvf":
-		return "audio/x-pvf"
-	case "ra", "ram":
-		return "audio/x-pn-realaudio"
-	case "sd2":
-		return "audio/x-sd2"
-	case "sln":
-		return "audio/x-sln"
-	case "smp":
-		return "audio/x-smp"
-	case "snd":
-		return "audio/basic"
-	case "sndr", "sndt":
-		return "audio/x-snd"
-	case "sou":
-		return "audio/x-sou"
-	case "sph":
-		return "audio/x-sph"
-	case "spx":
-		return "audio/x-speex"
-	case "tta":
-		return "audio/x-tta"
-	case "txw":
-		return "audio/x-txw"
-	case "vms":
-		return "audio/x-vms"
-	case "voc":
-		return "audio/x-voc"
-	case "vox":
-		return "audio/x-vox"
-	case "w64":
-		return "audio/x-w64"
-	case "wma":
-		return "audio/x-ms-wma"
-	case "wv":
-		return "audio/x-wavpack"
-	case "wve":
-		return "audio/x-wve"
-	case "swf":
-		return "application/x-shockwave-flash"
-	case "mp4":
-		return "video/mp4"
-	case "mpg", "mpeg":
-		return "video/mpeg"
-	case "wmv":
-		return "video/x-ms-wmv"
-	case "3g2":
-		return "video/3gpp2"
-	case "3gp":
-		return "video/3gpp"
-	case "asf":
-		return "video/x-ms-asf"
-	case "avi":
-		return "video/x-msvideo"
-	case "dat":
-		return "video/mp2t"
-	case "dv":
-		return "video/dv"
-	case "f4v":
-		return "video/x-f4v"
-	case "flv":
-		return "video/x-flv"
-	case "hevc":
-		return "video/hevc"
-	case "m2ts":
-		return "video/mp2t"
-	case "m2v":
-		return "video/mpeg"
-	case "m4v":
-		return "video/mp4"
-	case "mjpeg":
-		return "video/mjpeg"
-	case "mkv":
-		return "video/x-matroska"
-	case "mov":
-		return "video/quicktime"
-	case "mts":
-		return "video/mp2t"
-	case "mxf":
-		return "application/mxf"
-	case "ogv":
-		return "video/ogg"
-	case "rm":
-		return "application/vnd.rn-realmedia"
-	case "rmvb":
-		return "application/vnd.rn-realmedia-vbr"
-	case "vob":
-		return "video/x-ms-vob"
-	case "webm":
-		return "video/webm"
-	case "wtv":
-		return "video/x-ms-wtv"
-	case "mscompress":
-		return "application/x-mscompress"
-	case "hlp":
-		return "application/winhlp"
-	case "md":
-		return "text/markdown"
-	case "go":
-		return "text/x-go"
-	case "java":
-		return "text/x-java-source"
-	case "py":
-		return "text/x-python"
-	case "c":
-		return "text/x-c"
-	case "cpp":
-		return "text/x-c++"
-	case "h":
-		return "text/x-c"
-	case "hpp":
-		return "text/x-c++"
-	case "php":
-		return "application/x-httpd-php"
-	case "rb":
-		return "text/x-ruby"
-	case "vbs":
-		return "text/vbscript"
-	case "rs":
-		return "text/x-rust"
-	case "swift":
-		return "text/x-swift"
-	case "kt":
-		return "text/x-kotlin"
-	case "tsx":
-		return "application/typescript"
-	case "jsx":
-		return "text/jsx"
-	case "vue":
-		return "text/x-vue"
-	case "sql":
-		return "application/sql"
-	case "sh", "bash":
-		return "application/x-sh"
-	case "bat":
-		return "application/x-bat"
-	case "ps1":
-		return "application/x-powershell"
-	case "apk":
-		return "application/vnd.android.package-archive"
-	case "azw3":
-		return "application/vnd.amazon.ebook"
-	case "blend":
-		return "application/x-blender"
-	case "c4d":
-		return "application/vnd.c4d"
-	case "catpart":
-		return "application/vnd.catia"
-	case "chm":
-		return "application/vnd.ms-htmlhelp"
-	case "daf":
-		return "application/x-daf"
-	case "dbf":
-		return "application/x-dbf"
-	case "dcm":
-		return "application/dicom"
-	case "djvu":
-		return "image/vnd.djvu"
-	case "dsm":
-		return "application/x-dsm"
-	case "dwg":
-		return "application/acad"
-	case "dws":
-		return "application/x-dws"
-	case "dxf":
-		return "application/dxf"
-	case "eml":
-		return "message/rfc822"
-	case "fbx":
-		return "application/x-fbx"
-	case "in":
-		return "text/plain"
-	case "jar":
-		return "application/java-archive"
-	case "lrf":
-		return "application/x-sony-bbeb"
-	case "m3u":
-		return "audio/x-mpegurl"
-	case "m3u8":
-		return "application/vnd.apple.mpegurl"
-	case "max":
-		return "application/x-3ds"
-	case "mht", "mhtml":
-		return "message/rfc822"
-	case "prt":
-		return "application/x-prt"
-	case "sldasm":
-		return "application/vnd.solidworks"
-	case "sldprt":
-		return "application/vnd.solidworks"
-	case "snb":
-		return "application/x-snb"
-	case "stl":
-		return "application/sla"
-	case "tex":
-		return "application/x-tex"
-	case "vcf":
-		return "text/vcard"
-	case "x3d":
-		return "model/x3d+xml"
-	case "xpi":
-		return "application/x-xpinstall"
-	case "xps":
-		return "application/vnd.ms-xpsdocument"
-	default:
-		return "application/octet-stream"
+	if m, ok := extToMimeMap[ext]; ok {
+		return m
 	}
+	return "application/octet-stream"
 }
 
 // ValidateFileType 验证文件扩展名与真实类型是否匹配

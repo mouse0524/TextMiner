@@ -3,16 +3,19 @@ package extractor
 import (
 	"archive/zip"
 	"bytes"
-	"encoding/xml"
+	"context"
 	"fmt"
 	"html"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"textminer/pkg/logger"
+
+	lru "github.com/hashicorp/golang-lru/v2"
+	"golang.org/x/sync/errgroup"
 )
 
 // DocExtractor DOC文件提取器
@@ -44,7 +47,7 @@ func (e *DocxExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult
 func extractDocxOrOdtContent(filePath string, enableOcr bool) (string, error) {
 	reader, err := zip.OpenReader(filePath)
 	if err != nil {
-		return "", fmt.Errorf("打开文件失败: %v", err)
+		return "", fmt.Errorf("打开文件失败: %w", err)
 	}
 	defer reader.Close()
 
@@ -68,7 +71,7 @@ func extractDocxOrOdtContent(filePath string, enableOcr bool) (string, error) {
 func extractOdtContent(filePath string, reader *zip.ReadCloser, enableOcr bool) (string, error) {
 	text, err := extractODTContentWithCache(filePath)
 	if err != nil {
-		return "", fmt.Errorf("解析ODT文件失败: %v", err)
+		return "", fmt.Errorf("解析ODT文件失败: %w", err)
 	}
 
 	var content strings.Builder
@@ -95,13 +98,13 @@ func extractDocxContent(filePath string, reader *zip.ReadCloser, enableOcr bool)
 
 		f, err := file.Open()
 		if err != nil {
-			return "", fmt.Errorf("读取文档内容失败: %v", err)
+			return "", fmt.Errorf("读取文档内容失败: %w", err)
 		}
 
 		data, err := io.ReadAll(f)
 		f.Close()
 		if err != nil {
-			return "", fmt.Errorf("读取文件数据失败: %v", err)
+			return "", fmt.Errorf("读取文件数据失败: %w", err)
 		}
 
 		text := extractTextFromXML(data)
@@ -117,7 +120,7 @@ func extractDocxContent(filePath string, reader *zip.ReadCloser, enableOcr bool)
 	}
 
 	embeddingExtractor := NewOfficeEmbeddingExtractor("docx")
-	embeddingExtractor.ExtractFromOfficeFile(reader, &content)
+	embeddingExtractor.ExtractFromOfficeFile(reader, &content, 0)
 
 	return content.String(), nil
 }
@@ -152,156 +155,6 @@ func extractTextFromXML(data []byte) string {
 	}
 
 	return result.String()
-}
-
-// extractODTText 使用流式XML解析器提取ODT文本内容，性能优化
-func extractODTText(data []byte) (string, error) {
-	var result strings.Builder
-	result.Grow(len(data) / 4)
-
-	decoder := xml.NewDecoder(bytes.NewReader(data))
-	decoder.Strict = false
-
-	inText := false
-
-	for {
-		token, err := decoder.Token()
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return "", err
-		}
-
-		switch t := token.(type) {
-		case xml.StartElement:
-			if t.Name.Local == "p" || t.Name.Local == "h" {
-				inText = true
-			}
-		case xml.EndElement:
-			if t.Name.Local == "p" || t.Name.Local == "h" {
-				if inText {
-					result.WriteByte('\n')
-				}
-				inText = false
-			}
-		case xml.CharData:
-			if inText {
-				text := bytes.TrimSpace(t)
-				if len(text) > 0 {
-					result.Write(text)
-				}
-			}
-		}
-	}
-
-	return strings.TrimSpace(result.String()), nil
-}
-
-// extractODTTextOptimized 优化版ODT文本提取，使用更高效的字节操作
-func extractODTTextOptimized(data []byte) (string, error) {
-	var result strings.Builder
-	result.Grow(len(data) / 2)
-
-	dataBytes := data
-	dataLen := len(dataBytes)
-
-	pStartTag := []byte("<text:p>")
-	hStartTag := []byte("<text:h>")
-	pEndTag := []byte("</text:p>")
-	hEndTag := []byte("</text:h>")
-
-	pStartTagLen := len(pStartTag)
-	hStartTagLen := len(hStartTag)
-	pEndTagLen := len(pEndTag)
-	hEndTagLen := len(hEndTag)
-
-	for i := 0; i < dataLen; {
-		var endTag []byte
-		var endTagLen int
-
-		if i+pStartTagLen <= dataLen && bytes.Equal(dataBytes[i:i+pStartTagLen], pStartTag) {
-			endTag = pEndTag
-			endTagLen = pEndTagLen
-			i += pStartTagLen
-		} else if i+hStartTagLen <= dataLen && bytes.Equal(dataBytes[i:i+hStartTagLen], hStartTag) {
-			endTag = hEndTag
-			endTagLen = hEndTagLen
-			i += hStartTagLen
-		} else {
-			i++
-			continue
-		}
-
-		contentStart := i
-		for i+endTagLen <= dataLen {
-			if bytes.Equal(dataBytes[i:i+endTagLen], endTag) {
-				if i > contentStart {
-					text := bytes.TrimSpace(dataBytes[contentStart:i])
-					if len(text) > 0 {
-						result.Write(text)
-						result.WriteByte('\n')
-					}
-				}
-				i += endTagLen
-				break
-			}
-			i++
-		}
-	}
-
-	return strings.TrimSpace(result.String()), nil
-}
-
-// extractODTTextStream 使用流式XML解析器从io.Reader提取ODT文本内容，内存优化
-func extractODTTextStream(r io.Reader) (string, error) {
-	var result strings.Builder
-	result.Grow(1024 * 1024)
-
-	decoder := xml.NewDecoder(r)
-	decoder.Strict = false
-	decoder.AutoClose = xml.HTMLAutoClose
-
-	inText := false
-	hasContent := false
-
-	for {
-		token, err := decoder.Token()
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return "", err
-		}
-
-		switch t := token.(type) {
-		case xml.StartElement:
-			if t.Name.Local == "p" || t.Name.Local == "h" || t.Name.Local == "span" {
-				inText = true
-			}
-		case xml.EndElement:
-			if t.Name.Local == "p" || t.Name.Local == "h" {
-				if hasContent {
-					result.WriteByte('\n')
-					hasContent = false
-				}
-				inText = false
-			} else if t.Name.Local == "span" {
-				inText = false
-			}
-		case xml.CharData:
-			if inText {
-				text := bytes.TrimSpace(t)
-				if len(text) > 0 {
-					result.Write(text)
-					result.WriteByte(' ')
-					hasContent = true
-				}
-			}
-		}
-	}
-
-	return strings.TrimSpace(result.String()), nil
 }
 
 // extractODTTextFast 使用字节操作快速提取ODT文本内容
@@ -341,25 +194,6 @@ func extractODTTextFast(r io.Reader) (string, error) {
 	}
 
 	return strings.TrimSpace(result.String()), nil
-}
-
-// removeXMLTags 从字节数组中移除所有XML标签
-func removeXMLTags(data []byte) string {
-	var result strings.Builder
-	result.Grow(len(data))
-
-	inTag := false
-	for _, b := range data {
-		if b == '<' {
-			inTag = true
-		} else if b == '>' {
-			inTag = false
-		} else if !inTag {
-			result.WriteByte(b)
-		}
-	}
-
-	return strings.TrimSpace(result.String())
 }
 
 // PptExtractor PPT文件提取器
@@ -407,7 +241,7 @@ func (e *PptxExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult
 func extractVisioContent(filePath string, enableOcr bool) (string, error) {
 	reader, err := zip.OpenReader(filePath)
 	if err != nil {
-		return "", fmt.Errorf("打开文件失败: %v", err)
+		return "", fmt.Errorf("打开文件失败: %w", err)
 	}
 	defer reader.Close()
 
@@ -531,7 +365,7 @@ func (e *XlsxExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult
 func extractXlsxContent(filePath string, enableOcr bool) (string, error) {
 	reader, err := zip.OpenReader(filePath)
 	if err != nil {
-		return "", fmt.Errorf("打开XLSX失败: %v", err)
+		return "", fmt.Errorf("打开XLSX失败: %w", err)
 	}
 	defer reader.Close()
 
@@ -564,7 +398,7 @@ func extractXlsxContent(filePath string, enableOcr bool) (string, error) {
 	}
 
 	embeddingExtractor := NewOfficeEmbeddingExtractor("xlsx")
-	embeddingExtractor.ExtractFromOfficeFile(reader, &content)
+	embeddingExtractor.ExtractFromOfficeFile(reader, &content, 0)
 
 	return content.String(), nil
 }
@@ -909,7 +743,11 @@ func (e *XlsbExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult
 	return newSuccessResult(ctx, content), nil
 }
 
-var pptxContentCache sync.Map
+var pptxContentCache *lru.Cache[string, string]
+
+func init() {
+	pptxContentCache, _ = lru.New[string, string](128)
+}
 
 func extractPPTXContentWithCache(filePath string, enableOcr bool) (string, error) {
 	fileInfo, err := os.Stat(filePath)
@@ -917,12 +755,10 @@ func extractPPTXContentWithCache(filePath string, enableOcr bool) (string, error
 		return "", err
 	}
 
-	cacheKey := fmt.Sprintf("%s:%d:%v", filePath, fileInfo.ModTime().UnixNano(), enableOcr)
-	if cached, ok := pptxContentCache.Load(cacheKey); ok {
-		if content, ok := cached.(string); ok {
-			logger.Infof("使用缓存的PPTX内容: %s", filePath)
-			return content, nil
-		}
+	cacheKey := buildCacheKey(filePath, fileInfo.ModTime().UnixNano(), fileInfo.Size(), enableOcr)
+	if cached, ok := pptxContentCache.Get(cacheKey); ok {
+		logger.Infof("使用缓存的PPTX内容: %s", filePath)
+		return cached, nil
 	}
 
 	reader, err := zip.OpenReader(filePath)
@@ -950,34 +786,42 @@ func extractPPTXContentWithCache(filePath string, enableOcr bool) (string, error
 		err  error
 	}
 
+	// 使用 errgroup 限制并发到 NumCPU*2，替换裸 goroutine + resultChan 模式
+	eg, _ := errgroup.WithContext(context.Background())
+	eg.SetLimit(runtime.NumCPU() * 2)
 	resultChan := make(chan slideResult, len(slideFiles))
-	var wg sync.WaitGroup
 
 	for _, slideFile := range slideFiles {
-		wg.Add(1)
-		go func(sf *zip.File) {
-			defer wg.Done()
+		slideFile := slideFile
+		eg.Go(func() error {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Errorf("PPTX slide 处理 panic: %v", r)
+				}
+			}()
 
-			f, err := sf.Open()
+			f, err := slideFile.Open()
 			if err != nil {
 				resultChan <- slideResult{err: err}
-				return
+				return nil
 			}
+			defer f.Close()
 
 			data, err := io.ReadAll(f)
-			f.Close()
 			if err != nil {
 				resultChan <- slideResult{err: err}
-				return
+				return nil
 			}
 
 			text := extractTextFromPPTXXML(data)
 			resultChan <- slideResult{text: text}
-		}(slideFile)
+			return nil
+		})
 	}
 
+	// 等待所有 goroutine 完成
 	go func() {
-		wg.Wait()
+		_ = eg.Wait()
 		close(resultChan)
 	}()
 
@@ -1051,19 +895,19 @@ func extractPPTXContentWithCache(filePath string, enableOcr bool) (string, error
 	}
 
 	embeddingExtractor := NewOfficeEmbeddingExtractor("pptx")
-	embeddingExtractor.ExtractFromOfficeFile(reader, &content)
+	embeddingExtractor.ExtractFromOfficeFile(reader, &content, 0)
 
 	finalContent := strings.TrimSpace(content.String())
-	pptxContentCache.Store(cacheKey, finalContent)
+	pptxContentCache.Add(cacheKey, finalContent)
 	return finalContent, nil
 }
 
 func ClearPPTXCache() {
-	clearCache(&pptxContentCache)
+	clearCache(pptxContentCache)
 }
 
 func GetPPTXCacheSize() int {
-	return getCacheSize(&pptxContentCache)
+	return getCacheSize(pptxContentCache)
 }
 
 func ClearAllPPTCache() {
@@ -1075,10 +919,14 @@ func GetAllPPTCacheSize() int {
 	return GetPPTCacheSize() + GetPPTXCacheSize()
 }
 
-var odtContentCache sync.Map
+var odtContentCache *lru.Cache[string, string]
+
+func init() {
+	odtContentCache, _ = lru.New[string, string](128)
+}
 
 func extractODTContentWithCache(filePath string) (string, error) {
-	return extractWithCache(&odtContentCache, filePath, extractODTContent)
+	return extractWithCache(odtContentCache, filePath, extractODTContent)
 }
 
 func extractODTContent(filePath string) (string, error) {
@@ -1115,9 +963,9 @@ func extractODTContent(filePath string) (string, error) {
 }
 
 func ClearODTCache() {
-	clearCache(&odtContentCache)
+	clearCache(odtContentCache)
 }
 
 func GetODTCacheSize() int {
-	return getCacheSize(&odtContentCache)
+	return getCacheSize(odtContentCache)
 }

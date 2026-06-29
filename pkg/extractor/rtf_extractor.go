@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"unicode/utf8"
 
 	"github.com/EndFirstCorp/peekingReader"
@@ -27,31 +26,29 @@ func (e *RtfExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult,
 		fileSize = fileInfo.Size()
 	}
 
-	ext := strings.ToLower(filepath.Ext(filePath))
-
 	detector := GetFileTypeDetector()
 	_, mimeType, err := detector.GetDetailedInfo(filePath)
 	if err != nil || mimeType == "" {
-		mimeType = MapExtensionToMimeType(ext[1:])
+		mimeType = resolveMimeType(filePath)
 	}
 
 	result := &ExtractResult{
 		FileName: filepath.Base(filePath),
 		FileType: mimeType,
 		FileSize: fileSize,
-		Status:   "success",
+		Status:   StatusSuccess,
 	}
 
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		result.Status = "failed"
+		result.Status = StatusFailed
 		result.ErrorMessage = fmt.Sprintf("读取文件失败: %v", err)
 		return result, err
 	}
 
 	content, err := extractRtfText(data)
 	if err != nil {
-		result.Status = "failed"
+		result.Status = StatusFailed
 		result.ErrorMessage = fmt.Sprintf("提取RTF内容失败: %v", err)
 		return result, err
 	}

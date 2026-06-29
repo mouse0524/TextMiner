@@ -16,10 +16,28 @@ var (
 	ocrInstance *OcrProcessor
 	ocrOnce     sync.Once
 	ocrInitErr  error
+	ocrMu       sync.Mutex
 )
 
 type OcrProcessor struct {
 	engine ocr.Engine
+}
+
+// CloseOcrProcessor 安全关闭 OCR 引擎：幂等，多次调用不会 panic。
+// 必须在 main 函数或信号处理钩子中调用，避免 ONNX 句柄泄漏。
+func CloseOcrProcessor() error {
+	ocrMu.Lock()
+	defer ocrMu.Unlock()
+	if ocrInstance == nil {
+		return nil
+	}
+	var err error
+	if ocrInstance.engine != nil {
+		ocrInstance.engine.Destroy()
+	}
+	ocrInstance = nil
+	ocrInitErr = nil
+	return err
 }
 
 func GetOcrProcessor() (*OcrProcessor, error) {

@@ -15,6 +15,7 @@ require (
 	github.com/KSpaceer/goppt v0.0.0
 	github.com/bodgit/sevenzip v1.5.2
 	github.com/getcharzp/go-ocr v0.0.0-20260126073315-15e83dd6ccce
+	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/nwaples/rardecode/v2 v2.0.0-beta.4
 	github.com/semvis123/go-catdoc v0.0.4
 	github.com/shakinm/xlsReader v0.9.12
@@ -22,6 +23,7 @@ require (
 	github.com/ulikunitz/xz v0.5.12
 	github.com/unidoc/unipdf/v3 v3.9.0
 	github.com/up-zero/gotool v0.0.0-20260120011100-d685b2532b5a
+	golang.org/x/sync v0.17.0
 	golang.org/x/text v0.30.0
 )
 
@@ -35,7 +37,6 @@ require (
 	github.com/getcharzp/onnxruntime_purego v0.0.0-20260118041137-401482b32507 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
-	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/kdomanski/iso9660 v0.4.0 // indirect
 	github.com/klauspost/compress v1.17.11 // indirect

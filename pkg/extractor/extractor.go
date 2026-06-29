@@ -68,15 +68,28 @@ type Extractor interface {
 
 // ExtractResult 定义提取结果结构
 type ExtractResult struct {
-	FileName     string `json:"file_name"`    // 文件名
-	FileType     string `json:"file_type"`    // 文件类型（MIME类型）
-	FileSize     int64  `json:"file_size"`    // 文件大小（字节）
-	Status       string `json:"status"`       // 提取状态：success/failed
-	Content      string `json:"content"`      // 提取到的文本内容
-	ErrorMessage string `json:"error_msg"`    // 错误信息（如果有）
-	IsEncrypt    int    `json:"is_encrypt"`   // 是否加密：1=加密，0=未加密或不支持的类型
-	ExecuteTime  string `json:"execute_time"` // 执行时间（毫秒）
+	FileName     string `json:"file_name"`     // 文件名
+	FileType     string `json:"file_type"`     // 文件类型（MIME类型）
+	FileSize     int64  `json:"file_size"`     // 文件大小（字节）
+	Status       string `json:"status"`        // 提取状态：success/failed/skipped
+	Content      string `json:"content"`       // 提取到的文本内容
+	ErrorMessage string `json:"error_msg"`     // 错误信息（如果有）
+	IsEncrypt    int    `json:"is_encrypt"`    // 是否加密：1=加密，0=未加密或不支持的类型
+	ExecuteTime  string `json:"execute_time"`  // 执行时间（毫秒）
+	Skipped      bool   `json:"skipped,omitempty"` // 是否跳过（如不支持内容提取）
 }
+
+// Status 提取结果状态常量
+const (
+	StatusSuccess = "success"
+	StatusFailed  = "failed"
+	StatusSkipped = "skipped"
+	StatusWarning = "warning"
+)
+
+// ErrEncrypted 哨兵错误：表示目标文件已加密，无法提取明文内容。
+// 调用方可使用 errors.Is(err, ErrEncrypted) 判断加密场景。
+var ErrEncrypted = errors.New("文件已加密")
 
 // FileType 定义支持的文件类型
 const (
@@ -425,126 +438,74 @@ var SupportedFileTypes = map[string]bool{
 	"xps":     true,
 }
 
-// inferFileTypeFromMime 根据MIME类型推断文件类型
+// mimeToExtMap 反向 map：MIME 类型 -> 优先扩展名。O(1) 查表替代原先的 100+ case switch。
+// 当多个扩展名共享同一 MIME 时，本表显式指定返回的"代表"扩展名，与原 switch 行为一致。
+var mimeToExtMap = map[string]string{
+	"audio/midi":                    "mid",
+	"audio/wav":                     "wav",
+	"audio/ogg":                     "ogg",
+	"audio/mpeg":                    "mp3",
+	"audio/x-8svx":                  "8svx",
+	"audio/aac":                     "aac",
+	"audio/ac3":                     "ac3",
+	"audio/aiff":                    "aiff",
+	"audio/amb":                     "amb",
+	"audio/amr":                     "amr",
+	"audio/basic":                   "au",
+	"audio/x-avr":                   "avr",
+	"audio/x-caf":                   "caf",
+	"audio/x-cdda":                  "cdda",
+	"audio/x-cvs":                   "cvs",
+	"audio/x-cvu":                   "cvu",
+	"audio/x-dts":                   "dts",
+	"audio/x-dvms":                  "dvms",
+	"audio/x-fap":                   "fap",
+	"audio/flac":                    "flac",
+	"audio/x-fssd":                  "fssd",
+	"audio/x-gsrt":                  "gsrt",
+	"audio/x-hcom":                  "hcom",
+	"audio/x-htk":                   "htk",
+	"audio/x-ima":                   "ima",
+	"audio/x-ircam":                 "ircam",
+	"audio/mp4":                     "m4a",
+	"audio/x-m4r":                   "m4r",
+	"audio/x-maud":                  "maud",
+	"audio/x-mmf":                   "mmf",
+	"audio/x-nist":                  "nist",
+	"audio/opus":                    "opus",
+	"audio/x-paf":                   "paf",
+	"audio/PCMA":                    "pcma",
+	"audio/PCMU":                    "pcmu",
+	"audio/x-pvf":                   "pvf",
+	"audio/x-pn-realaudio":          "ra",
+	"audio/x-sd2":                   "sd2",
+	"audio/x-sln":                   "sln",
+	"audio/x-smp":                   "smp",
+	"audio/x-snd":                   "snd",
+	"audio/x-sou":                   "sou",
+	"audio/x-sph":                   "sph",
+	"audio/x-speex":                 "spx",
+	"audio/x-tta":                   "tta",
+	"audio/x-txw":                   "txw",
+	"audio/x-vms":                   "vms",
+	"audio/x-voc":                   "voc",
+	"audio/x-vox":                   "vox",
+	"audio/x-w64":                   "w64",
+	"audio/x-ms-wma":                "wma",
+	"audio/x-wavpack":               "wv",
+	"audio/x-wve":                   "wve",
+	"video/3gpp":                    "3gp",
+	"video/mp4":                     "mp4",
+	"application/x-mscompress-szdd": "mscompress",
+	"application/winhlp":            "hlp",
+}
+
+// inferFileTypeFromMime 根据MIME类型推断文件类型（O(1) map 查表）。
 func inferFileTypeFromMime(mimeType string) string {
-	switch mimeType {
-	case "audio/midi":
-		return "mid"
-	case "audio/wav":
-		return "wav"
-	case "audio/ogg":
-		return "ogg"
-	case "audio/mpeg":
-		return "mp3"
-	case "audio/x-8svx":
-		return "8svx"
-	case "audio/aac":
-		return "aac"
-	case "audio/ac3":
-		return "ac3"
-	case "audio/aiff":
-		return "aiff"
-	case "audio/amb":
-		return "amb"
-	case "audio/amr":
-		return "amr"
-	case "audio/basic":
-		return "au"
-	case "audio/x-avr":
-		return "avr"
-	case "audio/x-caf":
-		return "caf"
-	case "audio/x-cdda":
-		return "cdda"
-	case "audio/x-cvs":
-		return "cvs"
-	case "audio/x-cvu":
-		return "cvu"
-	case "audio/x-dts":
-		return "dts"
-	case "audio/x-dvms":
-		return "dvms"
-	case "audio/x-fap":
-		return "fap"
-	case "audio/flac":
-		return "flac"
-	case "audio/x-fssd":
-		return "fssd"
-	case "audio/x-gsrt":
-		return "gsrt"
-	case "audio/x-hcom":
-		return "hcom"
-	case "audio/x-htk":
-		return "htk"
-	case "audio/x-ima":
-		return "ima"
-	case "audio/x-ircam":
-		return "ircam"
-	case "audio/mp4":
-		return "m4a"
-	case "audio/x-m4r":
-		return "m4r"
-	case "audio/x-maud":
-		return "maud"
-	case "audio/x-mmf":
-		return "mmf"
-	case "audio/x-nist":
-		return "nist"
-	case "audio/opus":
-		return "opus"
-	case "audio/x-paf":
-		return "paf"
-	case "audio/PCMA":
-		return "pcma"
-	case "audio/PCMU":
-		return "pcmu"
-	case "audio/x-pvf":
-		return "pvf"
-	case "audio/x-pn-realaudio":
-		return "ra"
-	case "audio/x-sd2":
-		return "sd2"
-	case "audio/x-sln":
-		return "sln"
-	case "audio/x-smp":
-		return "smp"
-	case "audio/x-snd":
-		return "snd"
-	case "audio/x-sou":
-		return "sou"
-	case "audio/x-sph":
-		return "sph"
-	case "audio/x-speex":
-		return "spx"
-	case "audio/x-tta":
-		return "tta"
-	case "audio/x-txw":
-		return "txw"
-	case "audio/x-vms":
-		return "vms"
-	case "audio/x-voc":
-		return "voc"
-	case "audio/x-vox":
-		return "vox"
-	case "audio/x-w64":
-		return "w64"
-	case "audio/x-ms-wma":
-		return "wma"
-	case "audio/x-wavpack":
-		return "wv"
-	case "audio/x-wve":
-		return "wve"
-	case "video/3gpp":
-		return "3gp"
-	case "video/mp4":
-		return "mp4"
-	case "application/x-mscompress-szdd":
-		return "mscompress"
-	case "application/winhlp":
-		return "hlp"
-	default:
-		return ""
+	if ext, ok := mimeToExtMap[mimeType]; ok {
+		return ext
 	}
+	return ""
 }
 
 // IsFileTypeSupported 检查文件类型是否支持
@@ -560,7 +521,7 @@ func NewExtractor(filePath string) (Extractor, error) {
 	}
 
 	// 移除点号
-	ext = ext[1:]
+	ext = strings.TrimPrefix(ext, ".")
 
 	return NewExtractorByType(ext)
 }
@@ -646,23 +607,21 @@ func NewExtractorByType(fileType string) (Extractor, error) {
 type PgpExtractor struct{}
 
 func (e *PgpExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult, error) {
-	ext := strings.ToLower(filepath.Ext(filePath))
-	detector := GetFileTypeDetector()
-	_, mimeType, err := detector.GetDetailedInfo(filePath)
-	if err != nil || mimeType == "" {
-		mimeType = MapExtensionToMimeType(ext[1:])
+	_, mimeType, _ := GetFileTypeDetector().GetDetailedInfo(filePath)
+	if mimeType == "" {
+		mimeType = resolveMimeType(filePath)
 	}
 
 	return &ExtractResult{
 		FileName:     filepath.Base(filePath),
 		FileType:     mimeType,
 		FileSize:     0,
-		Status:       "failed",
+		Status:       StatusFailed,
 		Content:      "",
-		ErrorMessage: "文件已加密，无法提取内容",
+		ErrorMessage: ErrEncrypted.Error(),
 		IsEncrypt:    1,
 		ExecuteTime:  "0.0000",
-	}, errors.New("文件已加密，无法提取内容")
+	}, ErrEncrypted
 }
 
 // UnsupportedExtractor 不支持的文件类型提取器
@@ -674,19 +633,17 @@ func (e *UnsupportedExtractor) Extract(filePath string, enableOcr bool) (*Extrac
 	encryptionDetector := NewEncryptionDetector()
 	isEncrypt := encryptionDetector.CheckEncryption(filePath)
 
-	ext := strings.ToLower(filepath.Ext(filePath))
-
 	detector := GetFileTypeDetector()
 	_, mimeType, err := detector.GetDetailedInfo(filePath)
 	if err != nil || mimeType == "" {
-		mimeType = MapExtensionToMimeType(ext[1:])
+		mimeType = resolveMimeType(filePath)
 	}
 
 	return &ExtractResult{
 		FileName:     filepath.Base(filePath),
 		FileType:     mimeType,
 		FileSize:     0,
-		Status:       "failed",
+		Status:       StatusFailed,
 		Content:      "",
 		ErrorMessage: "不支持的文件类型",
 		IsEncrypt:    isEncrypt,
@@ -697,6 +654,24 @@ func (e *UnsupportedExtractor) Extract(filePath string, enableOcr bool) (*Extrac
 func ExtractFile(filePath string, enableOcr bool) (*ExtractResult, error) {
 	startTime := time.Now()
 
+	// 路径校验：拒绝包含上级目录引用或绝对路径的恶意输入（防御 Path Traversal）
+	cleanPath, err := validateFilePath(filePath)
+	if err != nil {
+		logger.Errorf("路径校验失败: %s, 错误: %v", filePath, err)
+		duration := time.Since(startTime)
+		return &ExtractResult{
+			FileName:     filepath.Base(filePath),
+			FileType:     "",
+			FileSize:     0,
+			Status:       StatusFailed,
+			Content:      "",
+			ErrorMessage: fmt.Sprintf("路径校验失败: %v", err),
+			IsEncrypt:    0,
+			ExecuteTime:  fmt.Sprintf("%.4f", duration.Seconds()),
+		}, err
+	}
+	filePath = cleanPath
+
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {
 		logger.Errorf("获取文件信息失败: %s, 错误: %v", filePath, err)
@@ -705,7 +680,7 @@ func ExtractFile(filePath string, enableOcr bool) (*ExtractResult, error) {
 			FileName:     filepath.Base(filePath),
 			FileType:     "",
 			FileSize:     0,
-			Status:       "failed",
+			Status:       StatusFailed,
 			Content:      "",
 			ErrorMessage: fmt.Sprintf("获取文件信息失败: %v", err),
 			IsEncrypt:    0,
@@ -718,14 +693,15 @@ func ExtractFile(filePath string, enableOcr bool) (*ExtractResult, error) {
 	isEncrypt := encryptionDetector.CheckEncryption(filePath)
 
 	// 使用FileTypeDetector来获取文件类型（使用Magika检测无后缀文件）
-	detector := NewFileTypeDetector(false)
+	detector := GetFileTypeDetector()
 	detectedFileType, mimeType, err := detector.GetDetailedInfo(filePath)
 	if err != nil {
 		// 如果获取失败，使用文件扩展名作为文件类型
 		ext := strings.ToLower(filepath.Ext(filePath))
-		detectedFileType = ext
 		if ext != "" {
-			detectedFileType = ext[1:]
+			detectedFileType = strings.TrimPrefix(ext, ".")
+		} else {
+			detectedFileType = ext
 		}
 		mimeType = MapExtensionToMimeType(detectedFileType)
 	}
@@ -740,14 +716,6 @@ func ExtractFile(filePath string, enableOcr bool) (*ExtractResult, error) {
 			logger.Infof("根据MIME类型推断文件类型: MIME=%s, 推断类型=%s", mimeType, fileType)
 		}
 	}
-
-	noPasswordCheckTypes := map[string]bool{}
-
-	if noPasswordCheckTypes[fileType] {
-		isEncrypt = 0
-	}
-
-	detector = GetFileTypeDetector()
 
 	detectedType, detectedMime, err := detector.GetDetailedInfo(filePath)
 	if err != nil {
@@ -764,7 +732,7 @@ func ExtractFile(filePath string, enableOcr bool) (*ExtractResult, error) {
 			// 检测到类型但不支持，回退到使用扩展名
 			ext := strings.ToLower(filepath.Ext(filePath))
 			if ext != "" {
-				fallbackType := ext[1:]
+				fallbackType := strings.TrimPrefix(ext, ".")
 				if IsFileTypeSupported(fallbackType) {
 					logger.Warnf("检测类型不支持，回退到扩展名: %s -> %s", detectedType, fallbackType)
 					fileType = fallbackType
@@ -792,7 +760,7 @@ func ExtractFile(filePath string, enableOcr bool) (*ExtractResult, error) {
 	if !IsFileTypeSupported(fileType) {
 		ext := strings.ToLower(filepath.Ext(filePath))
 		if ext != "" {
-			fallbackType := ext[1:]
+			fallbackType := strings.TrimPrefix(ext, ".")
 			if IsFileTypeSupported(fallbackType) {
 				logger.Warnf("检测类型不支持，回退到扩展名: %s -> %s", fileType, fallbackType)
 				fileType = fallbackType
@@ -809,7 +777,7 @@ func ExtractFile(filePath string, enableOcr bool) (*ExtractResult, error) {
 			FileName:     filepath.Base(filePath),
 			FileType:     mimeType,
 			FileSize:     fileSize,
-			Status:       "failed",
+			Status:       StatusFailed,
 			Content:      "",
 			ErrorMessage: fmt.Sprintf("文件类型不支持: %s", fileType),
 			IsEncrypt:    isEncrypt,
@@ -824,7 +792,7 @@ func ExtractFile(filePath string, enableOcr bool) (*ExtractResult, error) {
 			FileName:     filepath.Base(filePath),
 			FileType:     mimeType,
 			FileSize:     fileSize,
-			Status:       "failed",
+			Status:       StatusFailed,
 			Content:      "",
 			ErrorMessage: "文件已加密，无法提取内容",
 			IsEncrypt:    1,
@@ -840,7 +808,7 @@ func ExtractFile(filePath string, enableOcr bool) (*ExtractResult, error) {
 			FileName:     filepath.Base(filePath),
 			FileType:     mimeType,
 			FileSize:     fileSize,
-			Status:       "failed",
+			Status:       StatusFailed,
 			Content:      "",
 			ErrorMessage: err.Error(),
 			IsEncrypt:    isEncrypt,
@@ -852,7 +820,7 @@ func ExtractFile(filePath string, enableOcr bool) (*ExtractResult, error) {
 	result, err := extractor.Extract(filePath, enableOcr)
 	if err != nil {
 		logger.Errorf("提取失败: 文件=%s, 类型=%s, 错误: %v", filePath, fileType, err)
-		if strings.Contains(err.Error(), "加密") {
+		if errors.Is(err, ErrEncrypted) {
 			isEncrypt = 1
 		}
 	} else {

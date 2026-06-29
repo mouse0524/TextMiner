@@ -6,8 +6,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"strings"
-	"unsafe"
 )
 
 const (
@@ -172,31 +172,6 @@ func (p *XlsbParser) readVarIntFast(data []byte, maxBytes int) (uint32, int) {
 	}
 
 	return result, bytesRead
-}
-
-func (p *XlsbParser) readRecord(r *bytes.Reader) (*Record, error) {
-	recordID, err := p.readVarInt(r, 2)
-	if err != nil {
-		return nil, err
-	}
-
-	dataSize, err := p.readVarInt(r, 4)
-	if err != nil {
-		return nil, err
-	}
-
-	data := make([]byte, dataSize)
-	if dataSize > 0 {
-		_, err = io.ReadFull(r, data)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return &Record{
-		ID:   uint16(recordID),
-		Data: data,
-	}, nil
 }
 
 func (p *XlsbParser) readVarInt(r *bytes.Reader, maxBytes int) (uint32, error) {
@@ -417,7 +392,7 @@ func (p *XlsbParser) parseCellRealFast(data []byte) string {
 	}
 
 	value := binary.LittleEndian.Uint64(data[8:16])
-	floatValue := *(*float64)(unsafe.Pointer(&value))
+	floatValue := math.Float64frombits(value)
 
 	if floatValue == float64(int64(floatValue)) {
 		return fmt.Sprintf("%d", int64(floatValue))

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"unicode/utf16"
 )
@@ -144,14 +145,14 @@ func (d *EncryptionDetector) GetFeatureLibrary() *EncryptionFeatureLibrary {
 func (d *EncryptionDetector) readFileHeader(filePath string, size int) ([]byte, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("打开文件失败: %v", err)
+		return nil, fmt.Errorf("打开文件失败: %w", err)
 	}
 	defer file.Close()
 
 	data := make([]byte, size)
 	n, err := file.Read(data)
 	if err != nil && err != io.EOF {
-		return nil, fmt.Errorf("读取文件失败: %v", err)
+		return nil, fmt.Errorf("读取文件失败: %w", err)
 	}
 	return data[:n], nil
 }
@@ -202,7 +203,7 @@ func (d *EncryptionDetector) DetectEncryption(filePath string) (bool, string, er
 }
 
 func (d *EncryptionDetector) detectOLEEncryption(filePath string, header []byte) (bool, string, error) {
-	ext := strings.ToLower(getFileExtension(filePath))
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(filePath), "."))
 
 	switch ext {
 	case "doc", "dot", "wps", "wpt":
@@ -355,7 +356,7 @@ func (d *EncryptionDetector) checkExcelEncryption(filePath string, header []byte
 func (d *EncryptionDetector) checkPowerPointEncryption(filePath string, header []byte) (bool, string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return false, "PowerPoint", fmt.Errorf("打开文件失败: %v", err)
+		return false, "PowerPoint", fmt.Errorf("打开文件失败: %w", err)
 	}
 	defer file.Close()
 
@@ -422,7 +423,7 @@ func (d *EncryptionDetector) checkPowerPointEncryption(filePath string, header [
 func (d *EncryptionDetector) checkOOXMLEncryption(filePath string, header []byte) (bool, string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return false, "Office", fmt.Errorf("打开文件失败: %v", err)
+		return false, "Office", fmt.Errorf("打开文件失败: %w", err)
 	}
 	defer file.Close()
 
@@ -458,7 +459,7 @@ func (d *EncryptionDetector) checkOOXMLEncryption(filePath string, header []byte
 		}
 	}
 
-	ext := strings.ToLower(getFileExtension(filePath))
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(filePath), "."))
 	if ext == "docx" || ext == "xlsx" || ext == "pptx" || ext == "docm" || ext == "xlsm" || ext == "pptm" || ext == "xlsb" {
 		return true, "Office", nil
 	}
@@ -482,7 +483,7 @@ func (d *EncryptionDetector) detectZipEncryption(header []byte) (bool, string, e
 func (d *EncryptionDetector) detect7zEncryption(filePath string) (bool, string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return false, "7Z", fmt.Errorf("打开文件失败: %v", err)
+		return false, "7Z", fmt.Errorf("打开文件失败: %w", err)
 	}
 	defer file.Close()
 
@@ -641,14 +642,14 @@ func (d *EncryptionDetector) detectRAREncryption(header []byte) (bool, string, e
 func (d *EncryptionDetector) detectPDFEncryption(filePath string) (bool, string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return false, "PDF", fmt.Errorf("打开文件失败: %v", err)
+		return false, "PDF", fmt.Errorf("打开文件失败: %w", err)
 	}
 	defer file.Close()
 
 	searchData := make([]byte, 8192)
 	n, err := file.Read(searchData)
 	if err != nil && err != io.EOF {
-		return false, "PDF", fmt.Errorf("读取文件失败: %v", err)
+		return false, "PDF", fmt.Errorf("读取文件失败: %w", err)
 	}
 	searchData = searchData[:n]
 
@@ -839,18 +840,4 @@ func (d *EncryptionDetector) GetEncryptionInfo(filePath string) map[string]inter
 	return info
 }
 
-func getFileExtension(filePath string) string {
-	for i := len(filePath) - 1; i >= 0; i-- {
-		if filePath[i] == '.' {
-			return filePath[i+1:]
-		}
-	}
-	return ""
-}
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

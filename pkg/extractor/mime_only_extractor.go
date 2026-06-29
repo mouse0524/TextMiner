@@ -5,46 +5,70 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
 	"textminer/pkg/logger"
 )
 
-type MimeOnlyExtractor struct{}
-
-func NewMimeOnlyExtractor() (*MimeOnlyExtractor, error) {
-	return &MimeOnlyExtractor{}, nil
+// MimeOnlyExtractor 用于只需识别 MIME 类型、但不提取文本内容的文件类别
+// （如音频、视频、可执行文件、压缩包中的二进制等）。
+// 合并自原来的 AudioExtractor / VideoExtractor / MimeOnlyExtractor。
+type MimeOnlyExtractor struct {
+	kind string // "audio" | "video" | "mime"
 }
 
+func NewAudioExtractor() (*MimeOnlyExtractor, error)   { return &MimeOnlyExtractor{kind: "audio"}, nil }
+func NewVideoExtractor() (*MimeOnlyExtractor, error)   { return &MimeOnlyExtractor{kind: "video"}, nil }
+func NewMimeOnlyExtractor() (*MimeOnlyExtractor, error) { return &MimeOnlyExtractor{kind: "mime"}, nil }
+
+// Extract 探测 MIME 类型并返回 skipped 状态（不提取内容）。
 func (e *MimeOnlyExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult, error) {
+	if enableOcr {
+		logger.Warnf("%s 文件不支持 OCR: %s", e.kind, filePath)
+	}
+
 	fileInfo, err := os.Stat(filePath)
 	fileSize := int64(0)
 	if err == nil {
 		fileSize = fileInfo.Size()
 	}
 
-	ext := strings.ToLower(filepath.Ext(filePath))
-
 	detector := GetFileTypeDetector()
 	_, mimeType, err := detector.GetDetailedInfo(filePath)
 	if err != nil || mimeType == "" {
-		mimeType = MapExtensionToMimeType(ext[1:])
+		mimeType = resolveMimeType(filePath)
 	}
 
-	logger.Infof("MIME类型识别: %s, MIME类型: %s", filePath, mimeType)
-
-	result := &ExtractResult{
-		FileName: filepath.Base(filePath),
-		FileType: mimeType,
-		FileSize: fileSize,
-		Status:   "success",
-		Content:  "",
+	kindLabel := map[string]string{
+		"audio": "音频",
+		"video": "视频",
+		"mime":  "二进制",
+	}[e.kind]
+	if kindLabel == "" {
+		kindLabel = e.kind
 	}
+	logger.Infof("%s文件识别: %s, MIME类型: %s", kindLabel, filePath, mimeType)
 
 	if !isFileAccessible(filePath) {
 		logger.Warnf("文件不存在或无法访问: %s", filePath)
-		result.Status = "failed"
-		result.ErrorMessage = "文件不存在或无法访问"
-		return result, fmt.Errorf("文件不存在或无法访问")
+		return &ExtractResult{
+			FileName:     filepath.Base(filePath),
+			FileType:     mimeType,
+			FileSize:     fileSize,
+			Status:       StatusFailed,
+			ErrorMessage: "文件不存在或无法访问",
+		}, fmt.Errorf("文件不存在或无法访问")
 	}
 
-	return result, nil
+	// 这类文件不提取文本内容，返回 skipped 状态而非误导性 success
+	return &ExtractResult{
+		FileName: filepath.Base(filePath),
+		FileType: mimeType,
+		FileSize: fileSize,
+		Status:   StatusSkipped,
+		Skipped:  true,
+		Content:  "",
+	}, nil
 }
+
+// 保留 strings 的使用以避免空导入
+var _ = strings.TrimSpace

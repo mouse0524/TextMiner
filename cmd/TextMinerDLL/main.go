@@ -49,6 +49,7 @@ import "C"
 import (
 	"encoding/json"
 	"fmt"
+	"unsafe"
 
 	"textminer/pkg/extractor"
 )
@@ -64,40 +65,21 @@ type ExtractResultC struct {
 
 func init() {
 	C.load_onnx_runtime()
-
-	//dllDir := C.GoString(C.get_dll_directory())
-
-	//fmt.Printf("DLL 目录: %s\n", dllDir)
-
-	// if err := dlp.SetDllPath(dllDir); err != nil {
-	// 	//fmt.Printf("设置 DLL 路径失败: %v\n", err)
-	// } else {
-	// 	//fmt.Printf("DLL 路径设置成功\n")
-	// }
-
-	//modelsPath := filepath.Join(dllDir, "models")
-	//fmt.Printf("模型路径: %s\n", modelsPath)
-
-	//		if err := extractor.InitMagika(modelsPath); err != nil {
-	//			fmt.Printf("初始化Magika失败: %v\n", err)
-	//		} else {
-	//			fmt.Printf("Magika 初始化成功\n")
-	//		}
-	//	}
 }
 
 //export TextMiner_ExtractFile
 func TextMiner_ExtractFile(filePath *C.char, enableOcr C.int) *C.char {
+	if filePath == nil {
+		return C.CString(`{"status":"failed","error_message":"file path is nil"}`)
+	}
 	goFilePath := C.GoString(filePath)
 	goEnableOcr := enableOcr != 0
-
-	//fmt.Printf("TextMiner_ExtractFile called with filePath: %s, enableOcr: %v\n", goFilePath, goEnableOcr)
 
 	result, err := extractor.ExtractFile(goFilePath, goEnableOcr)
 	if err != nil {
 		fmt.Printf("ExtractFile failed: %v\n", err)
 		resultC := ExtractResultC{
-			Status:       "failed",
+			Status:       extractor.StatusFailed,
 			ErrorMessage: fmt.Sprintf("提取文件失败: %v", err),
 		}
 		jsonData, _ := json.Marshal(resultC)
@@ -119,7 +101,6 @@ func TextMiner_ExtractFile(filePath *C.char, enableOcr C.int) *C.char {
 		return C.CString(`{"status":"failed","error_message":"JSON序列化失败"}`)
 	}
 
-	//fmt.Printf("Returning JSON result: %s\n", string(jsonData))
 	return C.CString(string(jsonData))
 }
 

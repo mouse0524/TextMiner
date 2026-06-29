@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"textminer/pkg/extractor"
@@ -104,7 +106,21 @@ func init() {
 }
 
 func main() {
+	// 注册信号钩子：SIGINT/SIGTERM 时释放 OCR 引擎，避免 ONNX 句柄泄漏
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		logger.Warnf("收到信号 %v, 正在关闭 OCR 引擎...", sig)
+		_ = extractor.CloseOcrProcessor()
+		os.Exit(130)
+	}()
+	defer func() {
+		_ = extractor.CloseOcrProcessor()
+	}()
+
 	if err := rootCmd.Execute(); err != nil {
+		_ = extractor.CloseOcrProcessor()
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

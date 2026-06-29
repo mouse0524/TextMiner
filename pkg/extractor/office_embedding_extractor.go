@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"textminer/pkg/logger"
 )
 
 // OfficeEmbeddingExtractor Office内嵌附件提取器
@@ -23,7 +25,13 @@ func NewOfficeEmbeddingExtractor(fileType string) *OfficeEmbeddingExtractor {
 }
 
 // ExtractFromOfficeFile 从Office文件中提取内嵌附件内容
-func (e *OfficeEmbeddingExtractor) ExtractFromOfficeFile(reader *zip.ReadCloser, content *strings.Builder) error {
+// depth: 当前递归深度；首次调用传 0，达到 MaxEmbedDepth 时静默跳过。
+func (e *OfficeEmbeddingExtractor) ExtractFromOfficeFile(reader *zip.ReadCloser, content *strings.Builder, depth int) error {
+	if depth >= MaxEmbedDepth {
+		logger.Warnf("Office 嵌入递归达到最大深度 %d，跳过剩余嵌套", MaxEmbedDepth)
+		return nil
+	}
+
 	var embeddingsPath string
 
 	switch e.fileType {
@@ -44,11 +52,11 @@ func (e *OfficeEmbeddingExtractor) ExtractFromOfficeFile(reader *zip.ReadCloser,
 
 		ext := strings.ToLower(filepath.Ext(file.Name))
 		if ext == ".bin" {
-			if err := e.extractFromBinFile(file, content); err != nil {
+			if err := e.extractFromBinFile(file, content, depth); err != nil {
 				continue
 			}
 		} else if ext == ".xlsx" || ext == ".docx" || ext == ".pptx" {
-			if err := e.extractFromOfficeEmbedding(file, content); err != nil {
+			if err := e.extractFromOfficeEmbedding(file, content, depth); err != nil {
 				continue
 			}
 		}
@@ -58,7 +66,7 @@ func (e *OfficeEmbeddingExtractor) ExtractFromOfficeFile(reader *zip.ReadCloser,
 }
 
 // extractFromBinFile 从.bin文件中提取内容
-func (e *OfficeEmbeddingExtractor) extractFromBinFile(binFile *zip.File, content *strings.Builder) error {
+func (e *OfficeEmbeddingExtractor) extractFromBinFile(binFile *zip.File, content *strings.Builder, depth int) error {
 	f, err := binFile.Open()
 	if err != nil {
 		return err
@@ -76,7 +84,7 @@ func (e *OfficeEmbeddingExtractor) extractFromBinFile(binFile *zip.File, content
 		if bytes.HasPrefix(binData, []byte{0x50, 0x4B, 0x03, 0x04}) ||
 			bytes.HasPrefix(binData, []byte{0x50, 0x4B, 0x05, 0x06}) ||
 			bytes.HasPrefix(binData, []byte{0x50, 0x4B, 0x07, 0x08}) {
-			return e.extractFromZipBin(binData, binFile.Name, content)
+			return e.extractFromZipBin(binData, binFile.Name, content, depth)
 		}
 
 		// 检查是否是OLE2复合文档（旧格式Office）
@@ -94,7 +102,7 @@ func (e *OfficeEmbeddingExtractor) extractFromBinFile(binFile *zip.File, content
 }
 
 // extractFromZipBin 从ZIP格式的bin文件中提取内容
-func (e *OfficeEmbeddingExtractor) extractFromZipBin(binData []byte, binFileName string, content *strings.Builder) error {
+func (e *OfficeEmbeddingExtractor) extractFromZipBin(binData []byte, binFileName string, content *strings.Builder, depth int) error {
 	binReader, err := zip.NewReader(bytes.NewReader(binData), int64(len(binData)))
 	if err != nil {
 		return err
@@ -157,7 +165,7 @@ func (e *OfficeEmbeddingExtractor) extractFromZipBin(binData []byte, binFileName
 
 			ext := strings.ToLower(filepath.Ext(innerFile.Name))
 			if ext == ".bin" || ext == ".package" || ext == ".xml" {
-				if err := e.extractPackageContent(innerFile, content, binFileName); err != nil {
+				if err := e.extractPackageContent(innerFile, content, binFileName, depth); err != nil {
 					continue
 				}
 			}
@@ -229,7 +237,7 @@ func (e *OfficeEmbeddingExtractor) extractFromPdfBin(binData []byte, binFileName
 }
 
 // extractFromOfficeEmbedding 从Office内嵌文件中提取内容
-func (e *OfficeEmbeddingExtractor) extractFromOfficeEmbedding(embeddingFile *zip.File, content *strings.Builder) error {
+func (e *OfficeEmbeddingExtractor) extractFromOfficeEmbedding(embeddingFile *zip.File, content *strings.Builder, depth int) error {
 	f, err := embeddingFile.Open()
 	if err != nil {
 		return err
@@ -274,7 +282,7 @@ func (e *OfficeEmbeddingExtractor) extractFromOfficeEmbedding(embeddingFile *zip
 }
 
 // extractPackageContent 从package文件中提取内容
-func (e *OfficeEmbeddingExtractor) extractPackageContent(packageFile *zip.File, content *strings.Builder, sourceName string) error {
+func (e *OfficeEmbeddingExtractor) extractPackageContent(packageFile *zip.File, content *strings.Builder, sourceName string, depth int) error {
 	f, err := packageFile.Open()
 	if err != nil {
 		return err

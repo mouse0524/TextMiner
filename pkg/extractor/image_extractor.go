@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"textminer/pkg/logger"
 )
 
@@ -31,24 +30,22 @@ func (e *ImageExtractor) Extract(filePath string, enableOcr bool) (*ExtractResul
 		fileSize = fileInfo.Size()
 	}
 
-	ext := strings.ToLower(filepath.Ext(filePath))
-
 	detector := GetFileTypeDetector()
 	_, mimeType, err := detector.GetDetailedInfo(filePath)
 	if err != nil || mimeType == "" {
-		mimeType = MapExtensionToMimeType(ext[1:])
+		mimeType = resolveMimeType(filePath)
 	}
 
 	result := &ExtractResult{
 		FileName: filepath.Base(filePath),
 		FileType: mimeType,
 		FileSize: fileSize,
-		Status:   "success",
+		Status:   StatusSuccess,
 	}
 
 	if !isFileAccessible(filePath) {
 		logger.Warnf("图片文件不存在或无法访问: %s", filePath)
-		result.Status = "failed"
+		result.Status = StatusFailed
 		result.ErrorMessage = "文件不存在或无法访问"
 		return result, fmt.Errorf("文件不存在或无法访问")
 	}
@@ -56,7 +53,7 @@ func (e *ImageExtractor) Extract(filePath string, enableOcr bool) (*ExtractResul
 	if !enableOcr {
 		logger.Infof("图片OCR未启用: %s", filePath)
 		result.Content = ""
-		result.Status = "success"
+		result.Status = StatusSuccess
 		return result, nil
 	}
 
@@ -65,7 +62,7 @@ func (e *ImageExtractor) Extract(filePath string, enableOcr bool) (*ExtractResul
 	content, err := e.ocrProcessor.Recognize(filePath)
 	if err != nil {
 		logger.Errorf("图片OCR识别失败: %s, 错误: %v", filePath, err)
-		result.Status = "failed"
+		result.Status = StatusFailed
 		result.ErrorMessage = fmt.Sprintf("OCR识别失败: %v", err)
 		return result, err
 	}
