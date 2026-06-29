@@ -1,0 +1,37 @@
+
+# 忽略缓存目录
+.trae/
+.workflow
+.tra
+.sisyphus
+
+
+## 忽略测试文件目录
+assets
+errror_ext/
+test/
+wps/
+mingw64/
+mingw32/
+build/
+build-dll/
+DLP测试数据/
+emsdk/
+cat-master/
+pdfcpu-master/
+pdfium-cli-main/
+01*/
+readxlsb-master/
+# 忽略测试文件和数据库文件
+*.doc
+*.docx
+*.ppt
+*.pptx
+*.xls
+*.xlsx
+*.pdf
+*.png
+*.exe
+*.zip
+*.log
+*.py
