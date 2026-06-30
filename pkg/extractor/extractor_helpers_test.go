@@ -24,9 +24,9 @@ func TestBuildCacheKey(t *testing.T) {
 		t.Fatal("ocr 不同应产生不同 key")
 	}
 
-	// 校验 key 格式：4 段以 ':' 分隔
-	if strings.Count(k1, ":") != 3 {
-		t.Fatalf("key 期望 3 个分隔符，got %q", k1)
+	// 校验 key 格式：5 段以 ':' 分隔（path : mtime : size : ocr : sha1-prefix）
+	if strings.Count(k1, ":") != 4 {
+		t.Fatalf("key 期望 4 个分隔符，got %q", k1)
 	}
 }
 

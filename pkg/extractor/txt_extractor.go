@@ -5,37 +5,50 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"unicode/utf8"
+
+	"textminer/pkg/logger"
 
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 )
 
-type TxtExtractor struct{}
+// TxtExtractor 同时处理纯文本与代码文件：唯一的差别是 isCode 时对 OCR 报警一次。
+// 合并自原 TxtExtractor 与 CodeExtractor（2026-06-30 第五轮审查）。
+type TxtExtractor struct {
+	isCode bool
+}
+
+// NewTxtExtractor isCode=false：纯文本/log/ini。
+// NewTxtExtractor isCode=true：源代码/markup 文件。
+func NewTxtExtractor(isCode bool) *TxtExtractor {
+	return &TxtExtractor{isCode: isCode}
+}
 
 func (e *TxtExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult, error) {
-	fileInfo, err := os.Stat(filePath)
-	fileSize := int64(0)
-	if err == nil {
-		fileSize = fileInfo.Size()
+	if e.isCode && enableOcr {
+		logger.Warnf("代码文件不支持 OCR: %s", filePath)
 	}
 
-	detector := GetFileTypeDetector()
-	_, mimeType, err := detector.GetDetailedInfo(filePath)
-	if err != nil || mimeType == "" {
-		mimeType = resolveMimeType(filePath)
+	ctx, err := prepareExtractContext(filePath)
+	if err != nil {
+		return newFileAccessErrorResult(filePath), fmt.Errorf("文件不存在或无法访问")
 	}
+	result := newSuccessResult(ctx, "")
 
-	result := &ExtractResult{
-		FileName: filepath.Base(filePath),
-		FileType: mimeType,
-		FileSize: fileSize,
-		Status:   StatusSuccess,
+	// 流式读取：64KB bufio 缓冲，避免 os.ReadFile 一次性分配整个文件
+	f, err := os.Open(filePath)
+	if err != nil {
+		result.Status = StatusFailed
+		result.ErrorMessage = fmt.Sprintf("读取文件失败: %v", err)
+		return result, err
 	}
+	defer f.Close()
 
-	data, err := os.ReadFile(filePath)
+	br := getBufioReader(f)
+	defer putBufioReader(br)
+	data, err := io.ReadAll(br)
 	if err != nil {
 		result.Status = StatusFailed
 		result.ErrorMessage = fmt.Sprintf("读取文件失败: %v", err)

@@ -539,7 +539,7 @@ build/
 ### Q: 运行程序时报错"找不到 DLL"？
 A:
 
-- **命令行程序**（`TextMiner.exe`）：`cmd/TextMiner/dll_bootstrap.c` 会在启动时把可执行文件所在目录下的 `lib` 子目录加入 DLL 搜索路径，因此**只要保持构建产物布局**（`build\x86\TextMiner.exe` + `build\x86\lib\*.dll`）就能正常加载。如果手动移动，请同时把 `lib` 子目录搬到同一层。
+- **命令行程序**（`TextMiner.exe`）：`build_helpers/dll_bootstrap.c` 会在启动时把可执行文件所在目录下的 `lib` 子目录加入 DLL 搜索路径，因此**只要保持构建产物布局**（`build\x86\TextMiner.exe` + `build\x86\lib\*.dll`）就能正常加载。如果手动移动，请同时把 `lib` 子目录搬到同一层。
 - **DLL 模式**（`TextMiner.dll`）：依赖的 `onnxruntime.dll` 等必须与 DLL 在同一目录。
 - **应急方案**：把对应 lib 目录加入 `PATH` 环境变量（详见"运行程序"章节）。
 

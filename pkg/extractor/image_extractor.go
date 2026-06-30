@@ -1,9 +1,14 @@
 package extractor
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"os"
-	"path/filepath"
+	"strings"
 	"textminer/pkg/logger"
 )
 
@@ -24,36 +29,24 @@ func NewImageExtractor() (*ImageExtractor, error) {
 }
 
 func (e *ImageExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult, error) {
-	fileInfo, err := os.Stat(filePath)
-	fileSize := int64(0)
-	if err == nil {
-		fileSize = fileInfo.Size()
+	ctx, err := prepareExtractContext(filePath)
+	if err != nil {
+		return newFileAccessErrorResult(filePath), fmt.Errorf("文件不存在或无法访问")
 	}
-
-	detector := GetFileTypeDetector()
-	_, mimeType, err := detector.GetDetailedInfo(filePath)
-	if err != nil || mimeType == "" {
-		mimeType = resolveMimeType(filePath)
-	}
-
-	result := &ExtractResult{
-		FileName: filepath.Base(filePath),
-		FileType: mimeType,
-		FileSize: fileSize,
-		Status:   StatusSuccess,
-	}
-
-	if !isFileAccessible(filePath) {
-		logger.Warnf("图片文件不存在或无法访问: %s", filePath)
-		result.Status = StatusFailed
-		result.ErrorMessage = "文件不存在或无法访问"
-		return result, fmt.Errorf("文件不存在或无法访问")
-	}
+	result := newSuccessResult(ctx, "")
 
 	if !enableOcr {
-		logger.Infof("图片OCR未启用: %s", filePath)
-		result.Content = ""
-		result.Status = StatusSuccess
+		logger.Infof("图片OCR未启用，提取基础元数据: %s", filePath)
+		format, width, height, dimErr := readImageDimensions(filePath)
+		var b strings.Builder
+		fmt.Fprintf(&b, "[image: no OCR enabled")
+		if dimErr == nil {
+			fmt.Fprintf(&b, ", %s, %dx%d", format, width, height)
+		} else {
+			fmt.Fprintf(&b, ", dimensions unavailable")
+		}
+		b.WriteString("]")
+		result.Content = b.String()
 		return result, nil
 	}
 
@@ -71,4 +64,26 @@ func (e *ImageExtractor) Extract(filePath string, enableOcr bool) (*ExtractResul
 
 	result.Content = content
 	return result, nil
+}
+
+// readImageDimensions 读取图片的格式与像素尺寸，不做完整解码。
+// 返回 (format, width, height, err)；format 为 png/jpeg/gif 等小写字符串。
+func readImageDimensions(filePath string) (string, int, int, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return "", 0, 0, err
+	}
+	defer f.Close()
+
+	var head [512]byte
+	n, _ := f.Read(head[:])
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(head[:n]))
+	if err != nil {
+		return "", 0, 0, err
+	}
+	ext := ""
+	if dot := strings.LastIndex(filePath, "."); dot >= 0 {
+		ext = strings.ToLower(filePath[dot+1:])
+	}
+	return ext, cfg.Width, cfg.Height, nil
 }

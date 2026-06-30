@@ -1,11 +1,13 @@
 package extractor
 
 import (
-	"archive/zip"
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"textminer/pkg/logger"
 	"textminer/pkg/magika/magika"
@@ -17,21 +19,9 @@ var (
 	magikaInitialized bool
 )
 
-// isODTFile 通过检查ZIP文件内容来判断是否为ODT文件
-func isODTFile(filePath string) bool {
-	r, err := zip.OpenReader(filePath)
-	if err != nil {
-		return false
-	}
-	defer r.Close()
-
-	for _, f := range r.File {
-		if f.Name == "content.xml" || f.Name == "mimetype" {
-			return true
-		}
-	}
-	return false
-}
+// isODTFile 已移除：原实现会打开整个 zip 扫描 content.xml/mimetype，与下方 mime-based
+// detection + 扩展名 fallback 路径重复。ODT 文件可由 application/vnd.oasis.opendocument.text
+// MIME 或 .odt 扩展名识别，magika 失败的场景也由 fallback 兜底。
 
 // InitMagika initializes the Magika scanner for file type detection
 func InitMagika(assetsDir string) error {
@@ -68,23 +58,24 @@ type Extractor interface {
 
 // ExtractResult 定义提取结果结构
 type ExtractResult struct {
-	FileName     string `json:"file_name"`     // 文件名
-	FileType     string `json:"file_type"`     // 文件类型（MIME类型）
-	FileSize     int64  `json:"file_size"`     // 文件大小（字节）
-	Status       string `json:"status"`        // 提取状态：success/failed/skipped
-	Content      string `json:"content"`       // 提取到的文本内容
-	ErrorMessage string `json:"error_msg"`     // 错误信息（如果有）
-	IsEncrypt    int    `json:"is_encrypt"`    // 是否加密：1=加密，0=未加密或不支持的类型
-	ExecuteTime  string `json:"execute_time"`  // 执行时间（毫秒）
+	FileName     string `json:"file_name"`         // 文件名
+	FileType     string `json:"file_type"`         // 文件类型（MIME类型）
+	FileSize     int64  `json:"file_size"`         // 文件大小（字节）
+	Status       string `json:"status"`            // 提取状态：success/failed/skipped
+	Content      string `json:"content"`           // 提取到的文本内容
+	ErrorMessage string `json:"error_msg"`         // 错误信息（如果有）
+	IsEncrypt    int    `json:"is_encrypt"`        // 是否加密：1=加密，0=未加密或不支持的类型
+	ExecuteTime  string `json:"execute_time"`      // 执行时间（毫秒）
 	Skipped      bool   `json:"skipped,omitempty"` // 是否跳过（如不支持内容提取）
 }
 
 // Status 提取结果状态常量
 const (
-	StatusSuccess = "success"
-	StatusFailed  = "failed"
-	StatusSkipped = "skipped"
-	StatusWarning = "warning"
+	StatusSuccess   = "success"
+	StatusFailed    = "failed"
+	StatusSkipped   = "skipped"
+	StatusWarning   = "warning"
+	StatusEncrypted = "encrypted"
 )
 
 // ErrEncrypted 哨兵错误：表示目标文件已加密，无法提取明文内容。
@@ -112,7 +103,7 @@ const (
 	FileTypePptm     = "pptm"
 	FileTypeDps      = "dps"
 	FileTypeDpt      = "dpt"
-	FileTypeVsd      = "vsd"
+	FileTypeVsd      = "vsd" // VSD binary format unsupported; see NewExtractorByType
 	FileTypeVsdx     = "vsdx"
 	FileTypeXls      = "xls"
 	FileTypeXlsx     = "xlsx"
@@ -196,6 +187,7 @@ const (
 	FileTypeGif      = "gif"
 	FileTypeTiff     = "tiff"
 	FileTypeTif      = "tif"
+	FileTypeWebp     = "webp"
 )
 
 // SupportedFileTypes 支持的文件类型列表
@@ -400,42 +392,7 @@ var SupportedFileTypes = map[string]bool{
 	FileTypeGif:      true,
 	FileTypeTiff:     true,
 	FileTypeTif:      true,
-	// 新增文件类型
-	"apk":     true,
-	"azw3":    true,
-	"blend":   true,
-	"c4d":     true,
-	"catpart": true,
-	"chm":     true,
-	"daf":     true,
-	"dbf":     true,
-	"dcm":     true,
-	"djvu":    true,
-	"dsm":     true,
-	"dwg":     true,
-	"dws":     true,
-	"dxf":     true,
-	"eml":     true,
-	"exe":     true,
-	"fbx":     true,
-	"in":      true,
-	"jar":     true,
-	"lrf":     true,
-	"m3u":     true,
-	"m3u8":    true,
-	"max":     true,
-	"mht":     true,
-	"mhtml":   true,
-	"prt":     true,
-	"sldasm":  true,
-	"sldprt":  true,
-	"snb":     true,
-	"stl":     true,
-	"tex":     true,
-	"vcf":     true,
-	"x3d":     true,
-	"xpi":     true,
-	"xps":     true,
+	FileTypeWebp:     true,
 }
 
 // mimeToExtMap 反向 map：MIME 类型 -> 优先扩展名。O(1) 查表替代原先的 100+ case switch。
@@ -526,8 +483,17 @@ func NewExtractor(filePath string) (Extractor, error) {
 	return NewExtractorByType(ext)
 }
 
-// NewExtractorByType 根据文件类型创建对应的提取器
+// NewExtractorByType 根据文件类型创建对应的提取器。
+// 主体 switch-case 仅处理"有专门 dispatcher"的类型；高频但无专门逻辑的
+// 类型（audio/video/mime-only）走 O(1) 查表，避免主 switch 膨胀。
 func NewExtractorByType(fileType string) (Extractor, error) {
+	if fn, ok := audioExtractorFactories[fileType]; ok {
+		return fn()
+	}
+	if fn, ok := videoExtractorFactories[fileType]; ok {
+		return fn()
+	}
+
 	switch fileType {
 	case FileTypeDoc, FileTypeWps, FileTypeWpt, FileTypeDot:
 		return &DocExtractor{}, nil
@@ -550,7 +516,7 @@ func NewExtractorByType(fileType string) (Extractor, error) {
 	case FileTypePdf:
 		return &PdfExtractor{}, nil
 	case FileTypeTxt, FileTypeLog, FileTypeIni:
-		return &TxtExtractor{}, nil
+		return NewTxtExtractor(false), nil
 	case FileTypeCsv:
 		return &CsvExtractor{}, nil
 	case FileTypeRtf:
@@ -561,7 +527,7 @@ func NewExtractorByType(fileType string) (Extractor, error) {
 		FileTypeRs, FileTypeSwift, FileTypeKt, FileTypeKts, FileTypeScala, FileTypeRb, FileTypeVbs, FileTypePl, FileTypePm,
 		FileTypeSql, FileTypeXml, FileTypeJson, FileTypeYaml, FileTypeYml, FileTypeMd, FileTypeMarkdown,
 		FileTypeSh, FileTypeBash, FileTypeBat, FileTypePs1:
-		return &CodeExtractor{}, nil
+		return NewTxtExtractor(true), nil
 	case FileTypeZip:
 		return NewZipExtractor(), nil
 	case FileTypeSevenZip:
@@ -588,40 +554,145 @@ func NewExtractorByType(fileType string) (Extractor, error) {
 		return NewIsoExtractor(), nil
 	case FileTypePgp:
 		return &PgpExtractor{}, nil
-	case FileTypePng, FileTypeJpg, FileTypeJpeg, FileTypeBmp, FileTypeGif, FileTypeTiff, FileTypeTif:
+	case FileTypePng, FileTypeJpg, FileTypeJpeg, FileTypeBmp, FileTypeGif, FileTypeTiff, FileTypeTif, FileTypeWebp:
 		return NewImageExtractor()
-	case "mid", "midi", "wav", "ogg", "oga", "ogx", "mp3", "8svx", "aac", "ac3", "aiff", "aif", "amb", "amr", "au", "avr", "caf", "cdda", "cvs", "cvsd", "cvu", "dts", "dvms", "fap", "flac", "fssd", "gsrt", "hcom", "htk", "ima", "ircam", "m4a", "m4b", "m4p", "m4r", "maud", "mmf", "mp2", "nist", "opus", "paf", "pcma", "pcmu", "prc", "pvf", "ra", "ram", "sd2", "sln", "smp", "snd", "sndr", "sndt", "sou", "sph", "spx", "tta", "txw", "vms", "voc", "vox", "w64", "wma", "wv", "wve":
-		return NewAudioExtractor()
-	case "swf", "mp4", "mpg", "wmv", "3g2", "3gp", "asf", "avi", "dat", "dv", "f4v", "flv", "hevc", "m2ts", "m2v", "m4v", "mjpeg", "mkv", "mov", "mpeg", "mts", "mxf", "ogv", "rm", "rmvb", "vob", "webm", "wtv":
-		return NewVideoExtractor()
 	case "mscompress", "hlp":
 		return &UnsupportedExtractor{fileType: fileType}, nil
-	case "apk", "azw3", "blend", "c4d", "catpart", "chm", "daf", "dbf", "dcm", "djvu", "dsm", "dwg", "dws", "dxf", "eml", "exe", "fbx", "in", "jar", "lrf", "m3u", "m3u8", "max", "mht", "mhtml", "prt", "sldasm", "sldprt", "snb", "stl", "tex", "vcf", "x3d", "xpi", "xps":
-		return NewMimeOnlyExtractor()
 	default:
 		return &UnsupportedExtractor{fileType: fileType}, nil
 	}
 }
 
+// audioExtractorFactories 音频格式 -> 提取器构造器。
+// 60+ 种扩展名以 O(1) map 查表代替 O(N) switch-case。
+// 闭包包装是因为 NewAudioExtractor 返回 *MimeOnlyExtractor（具体类型），
+// 不能直接赋值给 func() (Extractor, error)。
+var audioExtractorFactories = func() map[string]func() (Extractor, error) {
+	m := make(map[string]func() (Extractor, error), 60)
+	exts := []string{
+		"mid", "midi", "wav", "ogg", "oga", "ogx", "mp3", "8svx", "aac", "ac3",
+		"aiff", "aif", "amb", "amr", "au", "avr", "caf", "cdda", "cvs", "cvsd",
+		"cvu", "dts", "dvms", "fap", "flac", "fssd", "gsrt", "hcom", "htk", "ima",
+		"ircam", "m4a", "m4b", "m4p", "m4r", "maud", "mmf", "mp2", "nist", "opus",
+		"paf", "pcma", "pcmu", "prc", "pvf", "ra", "ram", "sd2", "sln", "smp", "snd",
+		"sndr", "sndt", "sou", "sph", "spx", "tta", "txw", "vms", "voc", "vox",
+		"w64", "wma", "wv", "wve",
+	}
+	for _, e := range exts {
+		m[e] = func() (Extractor, error) { return NewAudioExtractor() }
+	}
+	return m
+}()
+
+var videoExtractorFactories = func() map[string]func() (Extractor, error) {
+	m := make(map[string]func() (Extractor, error), 30)
+	exts := []string{
+		"swf", "mp4", "mpg", "wmv", "3g2", "3gp", "asf", "avi", "dat", "dv",
+		"f4v", "flv", "hevc", "m2ts", "m2v", "m4v", "mjpeg", "mkv", "mov", "mpeg",
+		"mts", "mxf", "ogv", "rm", "rmvb", "vob", "webm", "wtv",
+	}
+	for _, e := range exts {
+		m[e] = func() (Extractor, error) { return NewVideoExtractor() }
+	}
+	return m
+}()
+
 // PgpExtractor PGP文件提取器
 type PgpExtractor struct{}
 
 func (e *PgpExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult, error) {
-	_, mimeType, _ := GetFileTypeDetector().GetDetailedInfo(filePath)
-	if mimeType == "" {
-		mimeType = resolveMimeType(filePath)
+	ctx, err := prepareExtractContext(filePath)
+	if err != nil {
+		return newFileAccessErrorResult(filePath), fmt.Errorf("文件不存在或无法访问")
+	}
+	result := newSuccessResult(ctx, "")
+
+	content, enc, err := extractPgpContent(filePath)
+	if err != nil {
+		result.Status = StatusFailed
+		result.ErrorMessage = fmt.Sprintf("PGP 提取失败: %v", err)
+		return result, err
+	}
+	if enc {
+		result.Status = StatusEncrypted
+		result.IsEncrypt = 1
+		result.ErrorMessage = "PGP 加密块：未提供密钥或检测到二进制 packet 头"
+		return result, ErrEncrypted
+	}
+	result.Content = content
+	return result, nil
+}
+
+// extractPgpContent 读取 PGP 文件并尝试提取可读 ASCII armor 内容。
+// 返回 (content, encrypted, err)：
+//   - content：解码后的明文或 ASCII armor 块全文
+//   - encrypted：true 表示文件实际包含加密的 PGP packet（0x85/0xc0/0xc3/0xc6）
+//   - err：读取失败时非 nil
+//
+// 大文件优化：先扫前 1MB 找二进制 PGP packet 头或 ASCII armor 标记；
+// 命中则只返回匹配区间，避免 io.ReadAll 整个文件 + 二次 string() 拷贝。
+const pgpScanWindow = 1 << 20 // 1 MB
+
+func extractPgpContent(filePath string) (string, bool, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return "", false, err
+	}
+	defer f.Close()
+
+	// 1) sniff 前 64 字节判定二进制 PGP packet 头
+	var head [64]byte
+	n, _ := f.Read(head[:])
+	if n >= 1 {
+		tag := head[0]
+		if tag == 0x85 || tag == 0xC0 || tag == 0xC3 || tag == 0xC6 {
+			return "", true, nil
+		}
 	}
 
-	return &ExtractResult{
-		FileName:     filepath.Base(filePath),
-		FileType:     mimeType,
-		FileSize:     0,
-		Status:       StatusFailed,
-		Content:      "",
-		ErrorMessage: ErrEncrypted.Error(),
-		IsEncrypt:    1,
-		ExecuteTime:  "0.0000",
-	}, ErrEncrypted
+	// 2) 扫 1MB 窗口找 ASCII armor 块
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", false, err
+	}
+	const sniffSize = pgpScanWindow
+	buf := make([]byte, sniffSize)
+	totalRead, _ := io.ReadFull(f, buf)
+	if totalRead <= 0 {
+		return "", false, nil
+	}
+	window := buf[:totalRead]
+
+	const beginMarker = "-----BEGIN PGP"
+	const endMarker = "-----END PGP"
+	if bi := bytes.Index(window, []byte(beginMarker)); bi >= 0 {
+		if ei := bytes.Index(window[bi:], []byte(endMarker)); ei >= 0 {
+			ei2 := bi + ei + len(endMarker)
+			if nl := bytes.IndexByte(window[ei2:], '\n'); nl >= 0 {
+				ei2 += nl + 1
+			}
+			return string(window[bi:ei2]), false, nil
+		}
+		// armor 块跨 1MB 边界：回退到 io.ReadAll 找 END
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return "", false, err
+		}
+		data, err := io.ReadAll(f)
+		if err != nil {
+			return "", false, err
+		}
+		text := string(data)
+		if ei := strings.Index(text[bi:], endMarker); ei >= 0 {
+			ei2 := bi + ei + len(endMarker)
+			if nl := strings.IndexByte(text[ei2:], '\n'); nl >= 0 {
+				ei2 += nl + 1
+			}
+			return text[bi:ei2], false, nil
+		}
+		return text[bi:], false, nil
+	}
+
+	// 3) 没有任何 PGP 标记：1MB 窗口当纯文本/密钥环返回
+	return string(window), false, nil
 }
 
 // UnsupportedExtractor 不支持的文件类型提取器
@@ -630,209 +701,150 @@ type UnsupportedExtractor struct {
 }
 
 func (e *UnsupportedExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult, error) {
-	encryptionDetector := NewEncryptionDetector()
-	isEncrypt := encryptionDetector.CheckEncryption(filePath)
-
-	detector := GetFileTypeDetector()
-	_, mimeType, err := detector.GetDetailedInfo(filePath)
-	if err != nil || mimeType == "" {
-		mimeType = resolveMimeType(filePath)
+	ctx, err := prepareExtractContext(filePath)
+	if err != nil {
+		return newFileAccessErrorResult(filePath), fmt.Errorf("文件不存在或无法访问")
 	}
+	result := newSuccessResult(ctx, "")
 
-	return &ExtractResult{
-		FileName:     filepath.Base(filePath),
-		FileType:     mimeType,
-		FileSize:     0,
-		Status:       StatusFailed,
-		Content:      "",
-		ErrorMessage: "不支持的文件类型",
-		IsEncrypt:    isEncrypt,
-	}, fmt.Errorf("不支持的文件类型: %s", e.fileType)
+	// 包级单例：避免每个 UnsupportedExtractor 实例都构造 9 元素 feature 库。
+	isEncrypt := defaultEncryptionDetector.CheckEncryption(filePath)
+
+	result.Status = StatusFailed
+	result.ErrorMessage = fmt.Sprintf("不支持的文件类型: %s", e.fileType)
+	result.IsEncrypt = isEncrypt
+	return result, fmt.Errorf("不支持的文件类型: %s", e.fileType)
 }
 
 // ExtractFile 统一的文件提取入口函数
 func ExtractFile(filePath string, enableOcr bool) (*ExtractResult, error) {
 	startTime := time.Now()
 
-	// 路径校验：拒绝包含上级目录引用或绝对路径的恶意输入（防御 Path Traversal）
-	cleanPath, err := validateFilePath(filePath)
+	ctx, err := extractFileValidate(filePath)
 	if err != nil {
-		logger.Errorf("路径校验失败: %s, 错误: %v", filePath, err)
-		duration := time.Since(startTime)
-		return &ExtractResult{
-			FileName:     filepath.Base(filePath),
-			FileType:     "",
-			FileSize:     0,
-			Status:       StatusFailed,
-			Content:      "",
-			ErrorMessage: fmt.Sprintf("路径校验失败: %v", err),
-			IsEncrypt:    0,
-			ExecuteTime:  fmt.Sprintf("%.4f", duration.Seconds()),
-		}, err
+		return makeFailureResult(filePath, "", 0, 0, err.Error(), startTime), err
 	}
-	filePath = cleanPath
 
-	fileInfo, err := os.Stat(filePath)
+	fileType, mimeType, isEncrypt, err := extractFileDetect(ctx)
 	if err != nil {
-		logger.Errorf("获取文件信息失败: %s, 错误: %v", filePath, err)
-		duration := time.Since(startTime)
-		return &ExtractResult{
-			FileName:     filepath.Base(filePath),
-			FileType:     "",
-			FileSize:     0,
-			Status:       StatusFailed,
-			Content:      "",
-			ErrorMessage: fmt.Sprintf("获取文件信息失败: %v", err),
-			IsEncrypt:    0,
-			ExecuteTime:  fmt.Sprintf("%.4f", duration.Seconds()),
-		}, err
-	}
-	fileSize := fileInfo.Size()
-
-	encryptionDetector := NewEncryptionDetector()
-	isEncrypt := encryptionDetector.CheckEncryption(filePath)
-
-	// 使用FileTypeDetector来获取文件类型（使用Magika检测无后缀文件）
-	detector := GetFileTypeDetector()
-	detectedFileType, mimeType, err := detector.GetDetailedInfo(filePath)
-	if err != nil {
-		// 如果获取失败，使用文件扩展名作为文件类型
-		ext := strings.ToLower(filepath.Ext(filePath))
-		if ext != "" {
-			detectedFileType = strings.TrimPrefix(ext, ".")
-		} else {
-			detectedFileType = ext
-		}
-		mimeType = MapExtensionToMimeType(detectedFileType)
-	}
-	fileType := detectedFileType
-
-	// 如果Magika返回的文件类型不支持，尝试从MIME类型推断文件类型
-	if !IsFileTypeSupported(fileType) && mimeType != "" {
-		// 根据MIME类型推断文件扩展名
-		inferredType := inferFileTypeFromMime(mimeType)
-		if inferredType != "" && IsFileTypeSupported(inferredType) {
-			fileType = inferredType
-			logger.Infof("根据MIME类型推断文件类型: MIME=%s, 推断类型=%s", mimeType, fileType)
-		}
-	}
-
-	detectedType, detectedMime, err := detector.GetDetailedInfo(filePath)
-	if err != nil {
-		logger.Warnf("检测文件类型失败: %s, 错误: %v, 将使用扩展名", filePath, err)
-	} else {
-		logger.Infof("文件类型检测: 文件=%s, 扩展名=%s, 检测类型=%s, MIME=%s",
-			filePath, fileType, detectedType, detectedMime)
-
-		// 只有当检测到的类型支持时才使用，否则保持原类型和MIME
-		if detectedType != "" && detectedType != "unknown" && IsFileTypeSupported(detectedType) {
-			fileType = detectedType
-			mimeType = detectedMime
-		} else if detectedType != "" && detectedType != "unknown" {
-			// 检测到类型但不支持，回退到使用扩展名
-			ext := strings.ToLower(filepath.Ext(filePath))
-			if ext != "" {
-				fallbackType := strings.TrimPrefix(ext, ".")
-				if IsFileTypeSupported(fallbackType) {
-					logger.Warnf("检测类型不支持，回退到扩展名: %s -> %s", detectedType, fallbackType)
-					fileType = fallbackType
-					mimeType = MapExtensionToMimeType(fallbackType)
-				}
-			}
-		}
-	}
-
-	if detectedMime == "application/vnd.oasis.opendocument.text" {
-		fileType = "odt"
-	}
-
-	if fileType == "" || fileType == "unknown" || detectedMime == "application/octet-stream" {
-		if isODTFile(filePath) {
-			logger.Infof("通过ZIP内容检测到ODT文件: %s", filePath)
-			fileType = "odt"
-			if detectedMime == "application/octet-stream" {
-				detectedMime = "application/vnd.oasis.opendocument.text"
-			}
-		}
-	}
-
-	// 如果最终类型仍不支持，回退到使用扩展名
-	if !IsFileTypeSupported(fileType) {
-		ext := strings.ToLower(filepath.Ext(filePath))
-		if ext != "" {
-			fallbackType := strings.TrimPrefix(ext, ".")
-			if IsFileTypeSupported(fallbackType) {
-				logger.Warnf("检测类型不支持，回退到扩展名: %s -> %s", fileType, fallbackType)
-				fileType = fallbackType
-				mimeType = MapExtensionToMimeType(fallbackType)
-			}
-		}
-	}
-
-	if !IsFileTypeSupported(fileType) {
-		logger.Warnf("不支持的文件类型: %s (检测到的类型)", fileType)
-
-		duration := time.Since(startTime)
-		return &ExtractResult{
-			FileName:     filepath.Base(filePath),
-			FileType:     mimeType,
-			FileSize:     fileSize,
-			Status:       StatusFailed,
-			Content:      "",
-			ErrorMessage: fmt.Sprintf("文件类型不支持: %s", fileType),
-			IsEncrypt:    isEncrypt,
-			ExecuteTime:  fmt.Sprintf("%.4f", duration.Seconds()),
-		}, errors.New("文件类型不支持")
-	}
-
-	if isEncrypt == 1 {
-		logger.Infof("文件已加密，直接返回: 文件=%s, 类型=%s, MIME=%s", filePath, fileType, mimeType)
-		duration := time.Since(startTime)
-		return &ExtractResult{
-			FileName:     filepath.Base(filePath),
-			FileType:     mimeType,
-			FileSize:     fileSize,
-			Status:       StatusFailed,
-			Content:      "",
-			ErrorMessage: "文件已加密，无法提取内容",
-			IsEncrypt:    1,
-			ExecuteTime:  fmt.Sprintf("%.4f", duration.Seconds()),
-		}, errors.New("文件已加密，无法提取内容")
+		return makeFailureResult(filePath, mimeType, ctx.FileSize, isEncrypt, err.Error(), startTime), err
 	}
 
 	extractor, err := NewExtractorByType(fileType)
 	if err != nil {
 		logger.Errorf("创建提取器失败: 类型=%s, 错误: %v", fileType, err)
-		duration := time.Since(startTime)
-		return &ExtractResult{
-			FileName:     filepath.Base(filePath),
-			FileType:     mimeType,
-			FileSize:     fileSize,
-			Status:       StatusFailed,
-			Content:      "",
-			ErrorMessage: err.Error(),
-			IsEncrypt:    isEncrypt,
-			ExecuteTime:  fmt.Sprintf("%.4f", duration.Seconds()),
-		}, err
+		return makeFailureResult(filePath, mimeType, ctx.FileSize, isEncrypt, err.Error(), startTime), err
 	}
 
-	logger.Infof("开始提取: 文件=%s, 类型=%s, MIME=%s, OCR=%v, 加密=%v", filePath, fileType, mimeType, enableOcr, isEncrypt == 1)
-	result, err := extractor.Extract(filePath, enableOcr)
+	logger.Infof("开始提取: 文件=%s, 类型=%s, MIME=%s, OCR=%v, 加密=%v",
+		ctx.FilePath, fileType, mimeType, enableOcr, isEncrypt == 1)
+	result, err := extractor.Extract(ctx.FilePath, enableOcr)
 	if err != nil {
-		logger.Errorf("提取失败: 文件=%s, 类型=%s, 错误: %v", filePath, fileType, err)
+		logger.Errorf("提取失败: 文件=%s, 类型=%s, 错误: %v", ctx.FilePath, fileType, err)
 		if errors.Is(err, ErrEncrypted) {
 			isEncrypt = 1
 		}
 	} else {
-		logger.Infof("提取完成: 文件=%s, 类型=%s, 状态=%s", filePath, fileType, result.Status)
+		logger.Infof("提取完成: 文件=%s, 类型=%s, 状态=%s", ctx.FilePath, fileType, result.Status)
 	}
 
+	return extractFileFinalize(ctx, fileType, mimeType, isEncrypt, result, startTime), err
+}
+
+// extractFileValidate 第一段：路径校验 + Stat，构造 ExtractContext。
+func extractFileValidate(filePath string) (*ExtractContext, error) {
+	cleanPath, err := validateFilePath(filePath)
+	if err != nil {
+		logger.Errorf("路径校验失败: %s, 错误: %v", filePath, err)
+		return nil, err
+	}
+	filePath = cleanPath
+
+	info, err := os.Stat(filePath)
+	if err != nil {
+		logger.Errorf("获取文件信息失败: %s, 错误: %v", filePath, err)
+		return nil, err
+	}
+	return prepareExtractContextWithInfo(filePath, info)
+}
+
+// extractFileDetect 第二段：加密检测 + 类型检测 + 5 次回退。
+func extractFileDetect(ctx *ExtractContext) (fileType, mimeType string, isEncrypt int, err error) {
+	// 包级单例：9 元素 feature 库一次性初始化，无需每文件 NewEncryptionDetector()
+	isEncrypt = defaultEncryptionDetector.CheckEncryption(ctx.FilePath)
+
+	// 复用 prepareExtractContextWithInfo 已经做过的 GetDetailedInfo 结果，
+	// 避免对同一文件再次调用（Magika ONNX 推理代价高）。
+	detectedFileType := ctx.DetectedFileType
+	detectedMime := ctx.DetectedMime
+	if detectedFileType == "" {
+		detectedFileType = strings.TrimPrefix(strings.ToLower(ctx.Ext), ".")
+	}
+	if detectedMime == "" {
+		detectedMime = MapExtensionToMimeType(detectedFileType)
+	}
+	mimeType = detectedMime
+	fileType = detectedFileType
+
+	logger.Infof("文件类型检测: 文件=%s, 扩展名=%s, 检测类型=%s, MIME=%s",
+		ctx.FilePath, fileType, detectedFileType, detectedMime)
+
+	if !IsFileTypeSupported(fileType) && mimeType != "" {
+		if inferredType := inferFileTypeFromMime(mimeType); inferredType != "" && IsFileTypeSupported(inferredType) {
+			fileType = inferredType
+			logger.Infof("根据MIME类型推断文件类型: MIME=%s, 推断类型=%s", mimeType, fileType)
+		}
+	}
+
+	if mimeType == "application/vnd.oasis.opendocument.text" {
+		fileType = "odt"
+	}
+
+	// 文件类型仍 unknown 但扩展名是 .odt：扩展名 fallback 会在下面的循环中命中
+	// （line 800 的 IsFileTypeSupported 检查）。不需要再调 isODTFile 打开 zip。
+	// 历史 isODTFile 已被移除，避免 3 次 zip 打开的浪费。
+
+	if !IsFileTypeSupported(fileType) {
+		if fallbackType := strings.TrimPrefix(strings.ToLower(ctx.Ext), "."); IsFileTypeSupported(fallbackType) {
+			logger.Warnf("检测类型不支持，回退到扩展名: %s -> %s", fileType, fallbackType)
+			fileType = fallbackType
+			mimeType = MapExtensionToMimeType(fallbackType)
+		}
+	}
+
+	if !IsFileTypeSupported(fileType) {
+		logger.Warnf("不支持的文件类型: %s (检测到的类型)", fileType)
+		err = errors.New("文件类型不支持")
+		return
+	}
+	if isEncrypt == 1 {
+		err = errors.New("文件已加密，无法提取内容")
+		return
+	}
+	return
+}
+
+// extractFileFinalize 第三段：填充 ExecuteTime、FileSize、IsEncrypt、FileType。
+func extractFileFinalize(ctx *ExtractContext, fileType, mimeType string, isEncrypt int, result *ExtractResult, startTime time.Time) *ExtractResult {
 	if mimeType != "" {
 		result.FileType = mimeType
 	}
-	result.FileSize = fileSize
+	result.FileSize = ctx.FileSize
 	result.IsEncrypt = isEncrypt
-	result.ExecuteTime = fmt.Sprintf("%.4f", time.Since(startTime).Seconds())
+	result.ExecuteTime = strconv.FormatFloat(time.Since(startTime).Seconds(), 'f', 4, 64)
+	return result
+}
 
-	return result, err
+// makeFailureResult 构造统一的失败结果：避免每个错误分支重复 8 行模板代码。
+func makeFailureResult(filePath, mimeType string, fileSize int64, isEncrypt int, errMsg string, startTime time.Time) *ExtractResult {
+	return &ExtractResult{
+		FileName:     filepath.Base(filePath),
+		FileType:     mimeType,
+		FileSize:     fileSize,
+		Status:       StatusFailed,
+		Content:      "",
+		ErrorMessage: errMsg,
+		IsEncrypt:    isEncrypt,
+		ExecuteTime:  strconv.FormatFloat(time.Since(startTime).Seconds(), 'f', 4, 64),
+	}
 }

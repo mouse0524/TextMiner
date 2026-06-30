@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,14 +14,9 @@ import (
 )
 
 type EncryptionFeature struct {
-	Name          string
-	MagicBytes    []byte
-	MagicOffset   int
-	EncryptOffset int
-	EncryptValue  []byte
-	EncryptMask   []byte
-	Description   string
-	FileTypes     []string
+	Name       string
+	MagicBytes []byte
+	FileTypes  []string
 }
 
 type EncryptionFeatureLibrary struct {
@@ -38,76 +34,51 @@ func NewEncryptionFeatureLibrary() *EncryptionFeatureLibrary {
 func (lib *EncryptionFeatureLibrary) initDefaultFeatures() {
 	lib.features = []EncryptionFeature{
 		{
-			Name:        "OLE Compound Document",
-			MagicBytes:  []byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1},
-			MagicOffset: 0,
-			Description: "OLE复合文档格式（Office 97-2003及加密的OOXML文件）",
-			FileTypes:   []string{"doc", "xls", "ppt", "docx", "xlsx", "pptx", "docm", "xlsm", "pptm", "xlsb", "wps", "et", "dps"},
+			Name:       "OLE Compound Document",
+			MagicBytes: []byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1},
+			FileTypes:  []string{"doc", "xls", "ppt", "docx", "xlsx", "pptx", "docm", "xlsm", "pptm", "xlsb", "wps", "et", "dps"},
 		},
 		{
-			Name:          "ZIP Archive",
-			MagicBytes:    []byte{0x50, 0x4B, 0x03, 0x04},
-			MagicOffset:   0,
-			EncryptOffset: 6,
-			EncryptMask:   []byte{0x01, 0x00},
-			EncryptValue:  []byte{0x01, 0x00},
-			Description:   "ZIP压缩文件，加密标志位在偏移6处",
-			FileTypes:     []string{"zip", "docx", "xlsx", "pptx", "odt", "ods", "odp"},
+			Name:       "ZIP Archive",
+			MagicBytes: []byte{0x50, 0x4B, 0x03, 0x04},
+			FileTypes:  []string{"zip", "docx", "xlsx", "pptx", "odt", "ods", "odp"},
 		},
 		{
-			Name:        "RAR5 Archive",
-			MagicBytes:  []byte{0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00},
-			MagicOffset: 0,
-			Description: "RAR5压缩文件格式",
-			FileTypes:   []string{"rar"},
+			Name:       "RAR5 Archive",
+			MagicBytes: []byte{0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00},
+			FileTypes:  []string{"rar"},
 		},
 		{
-			Name:        "RAR4 Archive",
-			MagicBytes:  []byte{0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00},
-			MagicOffset: 0,
-			Description: "RAR4压缩文件格式",
-			FileTypes:   []string{"rar"},
+			Name:       "RAR4 Archive",
+			MagicBytes: []byte{0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00},
+			FileTypes:  []string{"rar"},
 		},
 		{
-			Name:        "7Z Archive",
-			MagicBytes:  []byte{0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C},
-			MagicOffset: 0,
-			Description: "7-Zip压缩文件格式",
-			FileTypes:   []string{"7z"},
+			Name:       "7Z Archive",
+			MagicBytes: []byte{0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C},
+			FileTypes:  []string{"7z"},
 		},
 		{
-			Name:        "PDF Document",
-			MagicBytes:  []byte{0x25, 0x50, 0x44, 0x46},
-			MagicOffset: 0,
-			Description: "PDF文档格式",
-			FileTypes:   []string{"pdf"},
+			Name:       "PDF Document",
+			MagicBytes: []byte{0x25, 0x50, 0x44, 0x46},
+			FileTypes:  []string{"pdf"},
 		},
 		{
-			Name:        "PGP Binary",
-			MagicBytes:  []byte{0x85},
-			MagicOffset: 0,
-			Description: "PGP公钥加密会话密钥包",
-			FileTypes:   []string{"pgp", "gpg"},
+			Name:       "PGP Binary",
+			MagicBytes: []byte{0x85},
+			FileTypes:  []string{"pgp", "gpg"},
 		},
 		{
-			Name:        "PGP Encrypted Data",
-			MagicBytes:  []byte{0x8C},
-			MagicOffset: 0,
-			Description: "PGP加密数据包",
-			FileTypes:   []string{"pgp", "gpg"},
+			Name:       "PGP Encrypted Data",
+			MagicBytes: []byte{0x8C},
+			FileTypes:  []string{"pgp", "gpg"},
 		},
 		{
-			Name:        "PGP Compressed",
-			MagicBytes:  []byte{0xC4},
-			MagicOffset: 0,
-			Description: "PGP压缩数据包",
-			FileTypes:   []string{"pgp", "gpg"},
+			Name:       "PGP Compressed",
+			MagicBytes: []byte{0xC4},
+			FileTypes:  []string{"pgp", "gpg"},
 		},
 	}
-}
-
-func (lib *EncryptionFeatureLibrary) AddFeature(feature EncryptionFeature) {
-	lib.features = append(lib.features, feature)
 }
 
 func (lib *EncryptionFeatureLibrary) GetFeatures() []EncryptionFeature {
@@ -116,13 +87,11 @@ func (lib *EncryptionFeatureLibrary) GetFeatures() []EncryptionFeature {
 
 func (lib *EncryptionFeatureLibrary) DetectFileType(data []byte) string {
 	for _, feature := range lib.features {
-		if len(data) >= feature.MagicOffset+len(feature.MagicBytes) {
-			if bytes.Equal(data[feature.MagicOffset:feature.MagicOffset+len(feature.MagicBytes)], feature.MagicBytes) {
-				if len(feature.FileTypes) > 0 {
-					return feature.FileTypes[0]
-				}
-				return feature.Name
+		if bytes.HasPrefix(data, feature.MagicBytes) {
+			if len(feature.FileTypes) > 0 {
+				return feature.FileTypes[0]
 			}
+			return feature.Name
 		}
 	}
 	return ""
@@ -131,6 +100,10 @@ func (lib *EncryptionFeatureLibrary) DetectFileType(data []byte) string {
 type EncryptionDetector struct {
 	featureLibrary *EncryptionFeatureLibrary
 }
+
+// defaultEncryptionDetector 包级单例：构造期一次性初始化 9 元素 feature 库，
+// 避免每次 ExtractFile 重新分配。CheckEncryption 内部无状态，可安全共享。
+var defaultEncryptionDetector = NewEncryptionDetector()
 
 func NewEncryptionDetector() *EncryptionDetector {
 	return &EncryptionDetector{
@@ -228,63 +201,34 @@ func (d *EncryptionDetector) checkWordEncryption(filePath string, header []byte)
 	}
 	defer file.Close()
 
-	sectorShift := binary.LittleEndian.Uint16(header[0x1E:0x20])
-	sectorSize := int(1 << sectorShift)
-
-	firstDirSector := binary.LittleEndian.Uint32(header[0x3C:0x40])
-
-	dirOffset := int64(firstDirSector) * int64(sectorSize)
-	file.Seek(dirOffset, 0)
-
-	dirEntries := make([]byte, sectorSize)
-	n, err := file.Read(dirEntries)
-	if err != nil || n < sectorSize {
-		return false, "Word", nil
-	}
-
-	for offset := 0; offset < sectorSize; offset += 128 {
-		dirEntry := dirEntries[offset : offset+128]
-		if len(dirEntry) < 128 {
-			continue
+	sectorSize := int(1 << binary.LittleEndian.Uint16(header[0x1E:0x20]))
+	err = parseOLEDirectory(file, header, 0, func(name string, entry []byte) error {
+		if name != "WordDocument" {
+			return nil
 		}
-
-		nameLen := binary.LittleEndian.Uint16(dirEntry[64:66])
-		if nameLen == 0 || nameLen > 64 {
-			continue
+		startSector := binary.LittleEndian.Uint32(entry[116:120])
+		if _, err := file.Seek(int64(startSector)*int64(sectorSize), 0); err != nil {
+			return err
 		}
-
-		entryName := make([]uint16, nameLen/2)
-		for i := 0; i < int(nameLen/2); i++ {
-			entryName[i] = binary.LittleEndian.Uint16(dirEntry[i*2 : i*2+2])
+		fibHeader := make([]byte, 12)
+		if _, err := io.ReadFull(file, fibHeader); err != nil {
+			return err
 		}
-		name := string(utf16.Decode(entryName))
-		name = strings.TrimRight(name, "\x00")
-
-		if name == "WordDocument" {
-			startSector := binary.LittleEndian.Uint32(dirEntry[116:120])
-			wordDocOffset := int64(startSector) * int64(sectorSize)
-
-			file.Seek(wordDocOffset, 0)
-			fibHeader := make([]byte, 12)
-			_, err := io.ReadFull(file, fibHeader)
-			if err != nil {
-				continue
-			}
-
-			wIdent := binary.LittleEndian.Uint16(fibHeader[0:2])
-			if wIdent == 0xECA5 {
-				return true, "Word", nil
-			}
-
-			if wIdent == 0xA5DC || wIdent == 0xA59C {
-				_ = binary.LittleEndian.Uint16(fibHeader[10:12])
-				return false, "Word", nil
-			}
-
+		wIdent := binary.LittleEndian.Uint16(fibHeader[0:2])
+		if wIdent == 0xECA5 {
+			return errEncrypted
+		}
+		return errNotEncrypted
+	})
+	if err != nil {
+		if errors.Is(err, errEncrypted) {
+			return true, "Word", nil
+		}
+		if errors.Is(err, errNotEncrypted) {
 			return false, "Word", nil
 		}
+		return false, "Word", err
 	}
-
 	return false, "Word", nil
 }
 
@@ -295,61 +239,40 @@ func (d *EncryptionDetector) checkExcelEncryption(filePath string, header []byte
 	}
 	defer file.Close()
 
-	sectorShift := binary.LittleEndian.Uint16(header[0x1E:0x20])
-	sectorSize := int(1 << sectorShift)
-
-	firstDirSector := binary.LittleEndian.Uint32(header[0x3C:0x40])
-
-	dirOffset := int(firstDirSector) * sectorSize
-	file.Seek(int64(dirOffset), 0)
-
-	dirEntry := make([]byte, 128)
-	for i := 0; i < 100; i++ {
-		n, err := file.Read(dirEntry)
-		if err != nil || n < 128 {
-			break
+	sectorSize := int(1 << binary.LittleEndian.Uint16(header[0x1E:0x20]))
+	err = parseOLEDirectory(file, header, 100, func(name string, entry []byte) error {
+		if name != "Workbook" && name != "Book" {
+			return nil
 		}
-
-		nameLen := binary.LittleEndian.Uint16(dirEntry[64:66])
-		if nameLen == 0 || nameLen > 64 {
-			continue
+		startSector := binary.LittleEndian.Uint32(entry[116:120])
+		streamSize := binary.LittleEndian.Uint32(entry[120:124])
+		if _, err := file.Seek(int64(startSector)*int64(sectorSize), 0); err != nil {
+			return err
 		}
-
-		entryName := make([]uint16, nameLen/2)
-		for j := 0; j < int(nameLen/2); j++ {
-			entryName[j] = binary.LittleEndian.Uint16(dirEntry[j*2 : j*2+2])
+		maxSearch := 2048
+		if int(streamSize) < maxSearch {
+			maxSearch = int(streamSize)
 		}
-		name := string(utf16.Decode(entryName))
-		name = strings.TrimRight(name, "\x00")
-
-		if name == "Workbook" || name == "Book" {
-			startSector := binary.LittleEndian.Uint32(dirEntry[116:120])
-			streamSize := binary.LittleEndian.Uint32(dirEntry[120:124])
-
-			_ = streamSize
-
-			streamOffset := int(startSector) * sectorSize
-			file.Seek(int64(streamOffset), 0)
-
-			maxSearch := 2048
-			if maxSearch > int(streamSize) {
-				maxSearch = int(streamSize)
+		searchData := make([]byte, maxSearch)
+		if _, err := io.ReadFull(file, searchData); err != nil {
+			return err
+		}
+		for j := 0; j < len(searchData)-4; j++ {
+			if binary.LittleEndian.Uint16(searchData[j:j+2]) == 0x002F {
+				return errEncrypted
 			}
-
-			searchData := make([]byte, maxSearch)
-			file.Read(searchData)
-
-			for j := 0; j < len(searchData)-4; j++ {
-				recordID := binary.LittleEndian.Uint16(searchData[j : j+2])
-				if recordID == 0x002F {
-					return true, "Excel", nil
-				}
-			}
-
+		}
+		return errNotEncrypted
+	})
+	if err != nil {
+		if errors.Is(err, errEncrypted) {
+			return true, "Excel", nil
+		}
+		if errors.Is(err, errNotEncrypted) {
 			return false, "Excel", nil
 		}
+		return false, "Excel", err
 	}
-
 	return false, "Excel", nil
 }
 
@@ -360,63 +283,36 @@ func (d *EncryptionDetector) checkPowerPointEncryption(filePath string, header [
 	}
 	defer file.Close()
 
-	sectorShift := binary.LittleEndian.Uint16(header[0x1E:0x20])
-	sectorSize := int(1 << sectorShift)
-
-	firstDirSector := binary.LittleEndian.Uint32(header[0x3C:0x40])
-
-	dirOffset := int(firstDirSector) * sectorSize
-	file.Seek(int64(dirOffset), 0)
-
-	dirEntries := make([]byte, sectorSize)
-	n, err := file.Read(dirEntries)
-	if err != nil || n < sectorSize {
-		return false, "PowerPoint", nil
-	}
-
-	for offset := 0; offset < sectorSize; offset += 128 {
-		dirEntry := dirEntries[offset : offset+128]
-		if len(dirEntry) < 128 {
-			continue
-		}
-
-		nameLen := binary.LittleEndian.Uint16(dirEntry[64:66])
-		if nameLen == 0 || nameLen > 64 {
-			continue
-		}
-
-		entryName := make([]uint16, nameLen/2)
-		for i := 0; i < int(nameLen/2); i++ {
-			entryName[i] = binary.LittleEndian.Uint16(dirEntry[i*2 : i*2+2])
-		}
-		name := string(utf16.Decode(entryName))
-		name = strings.TrimRight(name, "\x00")
-
+	sectorSize := int(1 << binary.LittleEndian.Uint16(header[0x1E:0x20]))
+	err = parseOLEDirectory(file, header, 0, func(name string, entry []byte) error {
 		if name == "Current User" {
-			startSector := binary.LittleEndian.Uint32(dirEntry[116:120])
-			streamSize := binary.LittleEndian.Uint32(dirEntry[120:124])
-			streamOffset := int64(startSector) * int64(sectorSize)
-
+			startSector := binary.LittleEndian.Uint32(entry[116:120])
+			streamSize := binary.LittleEndian.Uint32(entry[120:124])
 			if streamSize >= 20 {
-				file.Seek(streamOffset, 0)
-				currentUserAtom := make([]byte, 20)
-				_, err := io.ReadFull(file, currentUserAtom)
-				if err != nil {
-					continue
+				if _, err := file.Seek(int64(startSector)*int64(sectorSize), 0); err != nil {
+					return err
 				}
-
-				headerToken := binary.LittleEndian.Uint32(currentUserAtom[16:20])
-				if headerToken == 0xE391C05F {
-					return true, "PowerPoint", nil
+				currentUserAtom := make([]byte, 20)
+				if _, err := io.ReadFull(file, currentUserAtom); err != nil {
+					return err
+				}
+				if binary.LittleEndian.Uint32(currentUserAtom[16:20]) == 0xE391C05F {
+					return errEncrypted
 				}
 			}
+			return nil
 		}
-
 		if strings.Contains(name, "Encrypted") {
+			return errEncrypted
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, errEncrypted) {
 			return true, "PowerPoint", nil
 		}
+		return false, "PowerPoint", err
 	}
-
 	return false, "PowerPoint", nil
 }
 
@@ -427,44 +323,107 @@ func (d *EncryptionDetector) checkOOXMLEncryption(filePath string, header []byte
 	}
 	defer file.Close()
 
-	sectorShift := binary.LittleEndian.Uint16(header[0x1E:0x20])
-	sectorSize := int(1 << sectorShift)
-
-	firstDirSector := binary.LittleEndian.Uint32(header[0x3C:0x40])
-
-	dirOffset := int(firstDirSector) * sectorSize
-	file.Seek(int64(dirOffset), 0)
-
-	dirEntry := make([]byte, 128)
-	for i := 0; i < 100; i++ {
-		n, err := file.Read(dirEntry)
-		if err != nil || n < 128 {
-			break
-		}
-
-		nameLen := binary.LittleEndian.Uint16(dirEntry[64:66])
-		if nameLen == 0 || nameLen > 64 {
-			continue
-		}
-
-		entryName := make([]uint16, nameLen/2)
-		for j := 0; j < int(nameLen/2); j++ {
-			entryName[j] = binary.LittleEndian.Uint16(dirEntry[j*2 : j*2+2])
-		}
-		name := string(utf16.Decode(entryName))
-		name = strings.TrimRight(name, "\x00")
-
+	err = parseOLEDirectory(file, header, 100, func(name string, entry []byte) error {
 		if strings.Contains(name, "EncryptionInfo") || strings.Contains(name, "EncryptedPackage") {
+			return errEncrypted
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, errEncrypted) {
 			return true, "Office", nil
 		}
+		return false, "Office", err
 	}
 
+	// OOXML 特化：扩展名兜底（即使目录里没看到 EncryptionInfo 也按加密处理）
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(filePath), "."))
 	if ext == "docx" || ext == "xlsx" || ext == "pptx" || ext == "docm" || ext == "xlsm" || ext == "pptm" || ext == "xlsb" {
 		return true, "Office", nil
 	}
-
 	return false, "Office", nil
+}
+
+// errEncrypted / errNotEncrypted 是 parseOLEDirectory 回调约定的哨兵：
+//
+//	返回 errEncrypted   → 命中并认定为加密
+//	返回 errNotEncrypted → 命中但非加密
+//	真正的 IO 错误（Seeker/Read 失败）直接透传
+//
+// 回调返回非 nil 即终止迭代。
+var (
+	errEncrypted    = errors.New("ole entry indicates encryption")
+	errNotEncrypted = errors.New("ole entry indicates non-encryption")
+)
+
+// parseOLEDirectory 通用 OLE 复合文档目录解析：给回调 (name, 128 字节 entry)；
+// 回调返回 nil 继续迭代；返回 err 立即终止并把 err 透传给调用方。
+//
+// maxEntries=0  → 读满整个 sector（Word/PPT 风格，每 128 字节一个 entry）
+// maxEntries>0  → 限条数（Excel/OOXML 风格）
+func parseOLEDirectory(file *os.File, header []byte, maxEntries int, callback func(name string, entry []byte) error) error {
+	sectorSize := int(1 << binary.LittleEndian.Uint16(header[0x1E:0x20]))
+	firstDirSector := binary.LittleEndian.Uint32(header[0x3C:0x40])
+	dirOffset := int64(firstDirSector) * int64(sectorSize)
+	if _, err := file.Seek(dirOffset, 0); err != nil {
+		return err
+	}
+
+	if maxEntries > 0 {
+		entry := make([]byte, 128)
+		for i := 0; i < maxEntries; i++ {
+			n, rerr := io.ReadFull(file, entry)
+			if rerr != nil || n < 128 {
+				break
+			}
+			name, ok := decodeOLEEntryName(entry)
+			if !ok {
+				continue
+			}
+			if err := callback(name, entry); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	// 整个 sector 风格
+	dirEntries := make([]byte, sectorSize)
+	n, rerr := io.ReadFull(file, dirEntries)
+	if rerr != nil || n < sectorSize {
+		return nil
+	}
+	for offset := 0; offset+128 <= sectorSize; offset += 128 {
+		entry := dirEntries[offset : offset+128]
+		name, ok := decodeOLEEntryName(entry)
+		if !ok {
+			continue
+		}
+		if err := callback(name, entry); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// decodeOLEEntryName 从 128 字节 OLE 目录项解出 name；空名/超长/损坏返回 ok=false。
+func decodeOLEEntryName(entry []byte) (string, bool) {
+	if len(entry) < 128 {
+		return "", false
+	}
+	nameLen := binary.LittleEndian.Uint16(entry[64:66])
+	if nameLen == 0 || nameLen > 64 {
+		return "", false
+	}
+	u16 := make([]uint16, nameLen/2)
+	for i := range u16 {
+		u16[i] = binary.LittleEndian.Uint16(entry[i*2 : i*2+2])
+	}
+	name := strings.TrimRight(string(utf16.Decode(u16)), "\x00")
+	if name == "" {
+		return "", false
+	}
+	return name, true
 }
 
 func (d *EncryptionDetector) detectZipEncryption(header []byte) (bool, string, error) {
@@ -565,15 +524,6 @@ func (d *EncryptionDetector) detect7zEncryption(filePath string) (bool, string, 
 	}
 
 	if headerType == 0x01 {
-		encodedHeader := make([]byte, 20)
-		n, err := io.ReadFull(file, encodedHeader)
-		if err != nil || n < 2 {
-			return false, "7Z", nil
-		}
-
-		_ = encodedHeader[0]
-		_ = encodedHeader[1]
-
 		headerSize := int(size)
 		if headerSize > 0 && headerSize < 10000 {
 			file.Seek(headerPos, 0)
@@ -600,32 +550,10 @@ func (d *EncryptionDetector) detectRAREncryption(header []byte) (bool, string, e
 		return false, "RAR", nil
 	}
 
-	// RAR5 format
-	if header[6] == 0x01 && header[7] == 0x00 {
-		if len(header) >= 32 {
-			vint := header[8:]
-			if len(vint) > 0 {
-				extraSize := 0
-				shift := 0
-				for i := 0; i < len(vint) && i < 10; i++ {
-					extraSize |= int(vint[i]&0x7F) << shift
-					if vint[i]&0x80 == 0 {
-						break
-					}
-					shift += 7
-				}
-				headerFlagsPos := 8 + extraSize + 4
-				if headerFlagsPos+2 <= len(header) {
-					headerFlags := binary.LittleEndian.Uint16(header[headerFlagsPos : headerFlagsPos+2])
-					// RAR5: bit 0 is Volume flag, not encryption
-					// We need to check for encryption in file headers
-					// For now, return false as we cannot reliably detect RAR5 encryption from header only
-					_ = headerFlags
-				}
-			}
-		}
-	} else if header[6] == 0x00 {
-		// RAR4 format
+	// RAR4 格式（magic 0x52 0x61 0x72 0x21 0x1A 0x07 0x00）：可从首部可靠判断加密
+	// RAR5（version 0x01 0x00）：加密标志位在文件头深处，无法仅靠 512 字节首部判断，
+	// 保守返回 false，依赖下游 extractor 报错。
+	if header[7] == 0x00 && header[6] != 0x01 {
 		if len(header) >= 44 {
 			headerType := header[38]
 			headerFlags := binary.LittleEndian.Uint16(header[40:42])
@@ -673,98 +601,13 @@ func (d *EncryptionDetector) isPGPFile(header []byte) bool {
 		return false
 	}
 
-	if len(header) >= 4 {
-		if bytes.HasPrefix(header, []byte{0xD0, 0xCF, 0x11, 0xE0}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x50, 0x4B, 0x03, 0x04}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x25, 0x50, 0x44, 0x46}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x37, 0x7A, 0xBC, 0xAF}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x52, 0x61, 0x72, 0x21}) {
+	for _, p := range pgpNegativePrefixes {
+		if len(header) >= len(p) && bytes.HasPrefix(header, p) {
 			return false
 		}
 	}
 
-	if len(header) >= 8 {
-		if bytes.HasPrefix(header, []byte{0x89, 0x50, 0x4E, 0x47}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x8B, 0x4A, 0x4E, 0x47}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x8A, 0x4D, 0x4E, 0x47}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0xFF, 0xD8, 0xFF}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x47, 0x49, 0x46}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x42, 0x4D}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x49, 0x49, 0x2A, 0x00}) || bytes.HasPrefix(header, []byte{0x4D, 0x4D, 0x00, 0x2A}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0xFF, 0xD8, 0xFF}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x47, 0x49, 0x46}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x42, 0x4D}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x49, 0x49, 0x2A, 0x00}) || bytes.HasPrefix(header, []byte{0x4D, 0x4D, 0x00, 0x2A}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x52, 0x49, 0x46, 0x46}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x4F, 0x67, 0x67, 0x53}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x66, 0x4C, 0x61, 0x43}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x49, 0x44, 0x33}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0xFF, 0xFB}) || bytes.HasPrefix(header, []byte{0xFF, 0xFA}) || bytes.HasPrefix(header, []byte{0xFF, 0xF3}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x1A, 0x45, 0xDF, 0xA3}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x30, 0x26, 0xB2, 0x75}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x4D, 0x5A}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x7F, 0x45, 0x4C, 0x46}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0xCA, 0xFE, 0xBA, 0xBE}) {
-			return false
-		}
-		if bytes.HasPrefix(header, []byte{0x25, 0x21, 0x50, 0x53}) {
-			return false
-		}
-		if header[0] == 0x81 && header[1] == 0x80 {
-			return false
-		}
-	}
-
-	pgpTags := []byte{0x85, 0x8C, 0xC4, 0xA8, 0x84, 0x8D, 0x95, 0x99}
-	for _, tag := range pgpTags {
+	for _, tag := range pgpPositiveTags {
 		if header[0] == tag {
 			return true
 		}
@@ -775,32 +618,9 @@ func (d *EncryptionDetector) isPGPFile(header []byte) bool {
 		if tag == 0x80 || tag == 0xC0 {
 			packetTag := header[0] & 0x3F
 			if packetTag >= 1 && packetTag <= 19 {
-				if len(header) >= 3 {
-					secondByte := header[1]
-					thirdByte := header[2]
-					if secondByte == 0x50 || secondByte == 0x4A || secondByte == 0x4D || secondByte == 0x47 {
-						return false
-					}
-					if secondByte == 0x89 && thirdByte == 0x50 {
-						return false
-					}
-					if secondByte == 0x8A && thirdByte == 0x4D {
-						return false
-					}
-					if secondByte == 0x8B && thirdByte == 0x4A {
-						return false
-					}
-					if secondByte == 0x81 && thirdByte == 0x80 {
-						return false
-					}
-					if secondByte == 0x52 && thirdByte == 0x61 {
-						return false
-					}
-					if secondByte == 0x37 && thirdByte == 0x7A {
-						return false
-					}
+				if !isPGPPacketNegativeHeader(header) {
+					return true
 				}
-				return true
 			}
 		}
 	}
@@ -817,6 +637,65 @@ func (d *EncryptionDetector) isPGPFile(header []byte) bool {
 		return true
 	}
 
+	return false
+}
+
+// pgpNegativePrefixes 一旦 header 以这些前缀开头，必然不是 PGP（OLE/ZIP/PDF/7Z/RAR/PNG/JPEG/GIF/BMP/TIFF/RIFF/OGG/FLAC/ID3/MP3/MKV/EXE/ELF/CLASS/PS）。
+// 表驱动：原本 150 行 switch-case，30+ 重复项（0xFF 0xD8 0xFF 出现 2 次、0x47 0x49 0x46 出现 2 次、0x42 0x4D 出现 2 次、TIFF 字节序出现 2 次）。
+var pgpNegativePrefixes = [][]byte{
+	{0xD0, 0xCF, 0x11, 0xE0},
+	{0x50, 0x4B, 0x03, 0x04},
+	{0x25, 0x50, 0x44, 0x46},
+	{0x37, 0x7A, 0xBC, 0xAF},
+	{0x52, 0x61, 0x72, 0x21},
+	{0x89, 0x50, 0x4E, 0x47},
+	{0x8B, 0x4A, 0x4E, 0x47},
+	{0x8A, 0x4D, 0x4E, 0x47},
+	{0xFF, 0xD8, 0xFF},
+	{0x47, 0x49, 0x46},
+	{0x42, 0x4D},
+	{0x49, 0x49, 0x2A, 0x00},
+	{0x4D, 0x4D, 0x00, 0x2A},
+	{0x52, 0x49, 0x46, 0x46},
+	{0x4F, 0x67, 0x67, 0x53},
+	{0x66, 0x4C, 0x61, 0x43},
+	{0x49, 0x44, 0x33},
+	{0xFF, 0xFB},
+	{0xFF, 0xFA},
+	{0xFF, 0xF3},
+	{0x1A, 0x45, 0xDF, 0xA3},
+	{0x30, 0x26, 0xB2, 0x75},
+	{0x4D, 0x5A},
+	{0x7F, 0x45, 0x4C, 0x46},
+	{0xCA, 0xFE, 0xBA, 0xBE},
+	{0x25, 0x21, 0x50, 0x53},
+	{0x81, 0x80},
+}
+
+// pgpPositiveTags PGP 公开已知的 old-format packet 头字节：0x85 公钥加密会话密钥包、0x8C 加密数据包、0xC4 压缩数据包 等。
+var pgpPositiveTags = []byte{0x85, 0x8C, 0xC4, 0xA8, 0x84, 0x8D, 0x95, 0x99}
+
+// isPGPPacketNegativeHeader 二次排除：当首字节的 packet tag 命中范围（0x80-0xBF、0xC0-0xDF），
+// 但第 2/3 字节表明这是 PNG/JNG/MNG/EXE/RAR/7Z 等已知格式时返回 true（排除 PGP）。
+func isPGPPacketNegativeHeader(header []byte) bool {
+	if len(header) < 3 {
+		return false
+	}
+	secondByte := header[1]
+	thirdByte := header[2]
+
+	if secondByte == 0x50 || secondByte == 0x4A || secondByte == 0x4D || secondByte == 0x47 {
+		return true
+	}
+	switch {
+	case secondByte == 0x89 && thirdByte == 0x50,
+		secondByte == 0x8A && thirdByte == 0x4D,
+		secondByte == 0x8B && thirdByte == 0x4A,
+		secondByte == 0x81 && thirdByte == 0x80,
+		secondByte == 0x52 && thirdByte == 0x61,
+		secondByte == 0x37 && thirdByte == 0x7A:
+		return true
+	}
 	return false
 }
 
@@ -839,5 +718,3 @@ func (d *EncryptionDetector) GetEncryptionInfo(filePath string) map[string]inter
 
 	return info
 }
-
-

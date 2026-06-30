@@ -16,9 +16,9 @@ func TestEncryptionDetector_DetectEncryption(t *testing.T) {
 	detector := NewEncryptionDetector()
 
 	tests := []struct {
-		filename    string
-		expectEnc   bool
-		expectType  string
+		filename   string
+		expectEnc  bool
+		expectType string
 	}{
 		{"01.doc", false, "Word"},
 		{"02.docx", true, "Office"},

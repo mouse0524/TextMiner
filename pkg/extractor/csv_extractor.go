@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"golang.org/x/text/encoding/simplifiedchinese"
@@ -16,26 +15,23 @@ import (
 type CsvExtractor struct{}
 
 func (e *CsvExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult, error) {
-	fileInfo, err := os.Stat(filePath)
-	fileSize := int64(0)
-	if err == nil {
-		fileSize = fileInfo.Size()
+	ctx, err := prepareExtractContext(filePath)
+	if err != nil {
+		return newFileAccessErrorResult(filePath), fmt.Errorf("文件不存在或无法访问")
 	}
+	result := newSuccessResult(ctx, "")
 
-	detector := GetFileTypeDetector()
-	_, mimeType, err := detector.GetDetailedInfo(filePath)
-	if err != nil || mimeType == "" {
-		mimeType = resolveMimeType(filePath)
+	f, err := os.Open(filePath)
+	if err != nil {
+		result.Status = StatusFailed
+		result.ErrorMessage = fmt.Sprintf("读取文件失败: %v", err)
+		return result, err
 	}
+	defer f.Close()
 
-	result := &ExtractResult{
-		FileName: filepath.Base(filePath),
-		FileType: mimeType,
-		FileSize: fileSize,
-		Status:   StatusSuccess,
-	}
-
-	data, err := os.ReadFile(filePath)
+	br := getBufioReader(f)
+	defer putBufioReader(br)
+	data, err := io.ReadAll(br)
 	if err != nil {
 		result.Status = StatusFailed
 		result.ErrorMessage = fmt.Sprintf("读取文件失败: %v", err)

@@ -44,6 +44,10 @@ static void load_onnx_runtime() {
         }
     }
 }
+
+static void log_to_debugger(const char* msg) {
+    OutputDebugStringA(msg);
+}
 */
 import "C"
 import (
@@ -67,6 +71,22 @@ func init() {
 	C.load_onnx_runtime()
 }
 
+// dllLog 把 Go 侧日志输出到 Windows 调试器（DebugView / VS 调试窗口），
+// 因为 DLL 没有 stdout，写到 fmt.Printf 会被丢弃。
+// 用 C.CString 分配 + 显式 C.free 避免泄漏（C 端 OutputDebugStringA 不释放）。
+func dllLog(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	if msg == "" {
+		return
+	}
+	cmsg := C.CString(msg)
+	defer C.free(unsafe.Pointer(cmsg))
+	C.log_to_debugger(cmsg)
+}
+
+// TextMiner_ExtractFile 同步提取文件文本。
+// 返回的 *C.char 由 C.free 释放（cgo 标准约定，调用方负责）。
+//
 //export TextMiner_ExtractFile
 func TextMiner_ExtractFile(filePath *C.char, enableOcr C.int) *C.char {
 	if filePath == nil {
@@ -77,7 +97,7 @@ func TextMiner_ExtractFile(filePath *C.char, enableOcr C.int) *C.char {
 
 	result, err := extractor.ExtractFile(goFilePath, goEnableOcr)
 	if err != nil {
-		fmt.Printf("ExtractFile failed: %v\n", err)
+		dllLog("ExtractFile failed: %v\n", err)
 		resultC := ExtractResultC{
 			Status:       extractor.StatusFailed,
 			ErrorMessage: fmt.Sprintf("提取文件失败: %v", err),
@@ -97,7 +117,7 @@ func TextMiner_ExtractFile(filePath *C.char, enableOcr C.int) *C.char {
 
 	jsonData, err := json.Marshal(resultC)
 	if err != nil {
-		fmt.Printf("JSON marshal failed: %v\n", err)
+		dllLog("JSON marshal failed: %v\n", err)
 		return C.CString(`{"status":"failed","error_message":"JSON序列化失败"}`)
 	}
 

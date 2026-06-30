@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"unicode/utf8"
 
@@ -20,26 +19,23 @@ import (
 type RtfExtractor struct{}
 
 func (e *RtfExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult, error) {
-	fileInfo, err := os.Stat(filePath)
-	fileSize := int64(0)
-	if err == nil {
-		fileSize = fileInfo.Size()
+	ctx, err := prepareExtractContext(filePath)
+	if err != nil {
+		return newFileAccessErrorResult(filePath), fmt.Errorf("文件不存在或无法访问")
 	}
+	result := newSuccessResult(ctx, "")
 
-	detector := GetFileTypeDetector()
-	_, mimeType, err := detector.GetDetailedInfo(filePath)
-	if err != nil || mimeType == "" {
-		mimeType = resolveMimeType(filePath)
+	f, err := os.Open(filePath)
+	if err != nil {
+		result.Status = StatusFailed
+		result.ErrorMessage = fmt.Sprintf("读取文件失败: %v", err)
+		return result, err
 	}
+	defer f.Close()
 
-	result := &ExtractResult{
-		FileName: filepath.Base(filePath),
-		FileType: mimeType,
-		FileSize: fileSize,
-		Status:   StatusSuccess,
-	}
-
-	data, err := os.ReadFile(filePath)
+	br := getBufioReader(f)
+	defer putBufioReader(br)
+	data, err := io.ReadAll(br)
 	if err != nil {
 		result.Status = StatusFailed
 		result.ErrorMessage = fmt.Sprintf("读取文件失败: %v", err)
@@ -169,33 +165,23 @@ func readControl(r peekingReader.Reader, text *bytes.Buffer, decoder *encoding.E
 	return nil
 }
 
+// codePageDecoders O(1) 查表：替换 13 路 switch；找不到时返回 nil（调用方 fallback）。
+var codePageDecoders = map[int]encoding.Encoding{
+	936:  simplifiedchinese.GBK,
+	950:  traditionalchinese.Big5,
+	1250: charmap.Windows1250,
+	1251: charmap.Windows1251,
+	1252: charmap.Windows1252,
+	1253: charmap.Windows1253,
+	1254: charmap.Windows1254,
+	1255: charmap.Windows1255,
+	1256: charmap.Windows1256,
+	1257: charmap.Windows1257,
+	1258: charmap.Windows1258,
+}
+
 func getDecoder(codePage int) encoding.Encoding {
-	switch codePage {
-	case 936:
-		return simplifiedchinese.GBK
-	case 950:
-		return traditionalchinese.Big5
-	case 1250:
-		return charmap.Windows1250
-	case 1251:
-		return charmap.Windows1251
-	case 1252:
-		return charmap.Windows1252
-	case 1253:
-		return charmap.Windows1253
-	case 1254:
-		return charmap.Windows1254
-	case 1255:
-		return charmap.Windows1255
-	case 1256:
-		return charmap.Windows1256
-	case 1257:
-		return charmap.Windows1257
-	case 1258:
-		return charmap.Windows1258
-	default:
-		return nil
-	}
+	return codePageDecoders[codePage]
 }
 
 func tokenizeControl(r peekingReader.Reader) (string, int, error) {
@@ -296,37 +282,35 @@ func readUntilClosingBrace(r peekingReader.Reader) error {
 	return err
 }
 
+// symbolReplacements O(1) 查表：替换 14 路 switch；找不到时返回 "" + false。
+var symbolReplacements = map[string]string{
+	"bullet":    "*",
+	"emdash":    "-",
+	"endash":    "-",
+	"lquote":    "'",
+	"rquote":    "'",
+	"ldblquote": "\"",
+	"rdblquote": "\"",
+	"line":      "\n",
+	"par":       "\n",
+	"page":      "\n",
+	"sect":      "\n",
+	"tab":       "\t",
+	"cell":      " ",
+	"column":    " ",
+	"row":       " ",
+	"~":         " ",
+	"_":         "-",
+	"|":         "|",
+	"-":         "-",
+	":":         ":",
+	"{":         "",
+	"}":         "",
+}
+
 func convertSymbol(symbol string) (string, bool) {
-	switch symbol {
-	case "bullet":
-		return "*", true
-	case "emdash", "endash":
-		return "-", true
-	case "lquote", "rquote":
-		return "'", true
-	case "ldblquote", "rdblquote":
-		return "\"", true
-	case "line":
-		return "\n", true
-	case "par", "page", "sect":
-		return "\n", true
-	case "tab":
-		return "\t", true
-	case "cell", "column", "row":
-		return " ", true
-	case "~":
-		return " ", true
-	case "_":
-		return "-", true
-	case "|":
-		return "|", true
-	case "-":
-		return "-", true
-	case ":":
-		return ":", true
-	case "{", "}":
-		return "", true
-	default:
-		return "", false
+	if v, ok := symbolReplacements[symbol]; ok {
+		return v, true
 	}
+	return "", false
 }

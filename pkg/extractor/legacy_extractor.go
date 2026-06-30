@@ -8,8 +8,8 @@ import (
 	"textminer/pkg/logger"
 
 	goppt "github.com/KSpaceer/goppt"
-	gocatdoc "github.com/semvis123/go-catdoc"
 	lru "github.com/hashicorp/golang-lru/v2"
+	gocatdoc "github.com/semvis123/go-catdoc"
 	"github.com/shakinm/xlsReader/xls"
 )
 
@@ -244,8 +244,7 @@ type PowerPointPptExtractor struct{}
 
 func (e *PowerPointPptExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult, error) {
 	// 先检查文件是否加密
-	detector := NewEncryptionDetector()
-	isEnc := detector.CheckEncryption(filePath)
+	isEnc := defaultEncryptionDetector.CheckEncryption(filePath)
 	if isEnc == 1 {
 		logger.Infof("PPT文件已加密，直接返回: 文件=%s", filePath)
 		return &ExtractResult{

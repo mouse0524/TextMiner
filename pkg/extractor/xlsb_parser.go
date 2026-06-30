@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"strconv"
 	"strings"
+	"sync"
 )
 
 const (
@@ -368,6 +370,15 @@ func (p *XlsbParser) parseCellIsstFast(data []byte) string {
 	return ""
 }
 
+// xlsbCellBufferPool 复用 *bytes.Buffer 减少单元格格式化时 GC 压力。
+// strconv.Append* 写入 buffer；String() 后归还 pool。注意：调用方在 String() 后
+// 不再持有 buffer 引用，因此 pool 重用是安全的。
+var xlsbCellBufferPool = sync.Pool{
+	New: func() interface{} {
+		return bytes.NewBuffer(make([]byte, 0, 32))
+	},
+}
+
 func (p *XlsbParser) parseCellRkFast(data []byte) string {
 	if len(data) < 16 {
 		return ""
@@ -375,15 +386,21 @@ func (p *XlsbParser) parseCellRkFast(data []byte) string {
 
 	value := binary.LittleEndian.Uint64(data[8:16])
 
+	buf := xlsbCellBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer xlsbCellBufferPool.Put(buf)
+
 	if value&0x02 != 0 {
 		floatVal := float64(int32(value>>2)) / 100.0
 		if floatVal == float64(int64(floatVal)) {
-			return fmt.Sprintf("%d", int64(floatVal))
+			buf.Write(strconv.AppendInt(buf.Bytes()[:0], int64(floatVal), 10))
+		} else {
+			buf.Write(strconv.AppendFloat(buf.Bytes()[:0], floatVal, 'g', -1, 64))
 		}
-		return fmt.Sprintf("%g", floatVal)
+	} else {
+		buf.Write(strconv.AppendInt(buf.Bytes()[:0], int64(int32(value>>2)), 10))
 	}
-
-	return fmt.Sprintf("%d", int32(value>>2))
+	return buf.String()
 }
 
 func (p *XlsbParser) parseCellRealFast(data []byte) string {
@@ -394,10 +411,16 @@ func (p *XlsbParser) parseCellRealFast(data []byte) string {
 	value := binary.LittleEndian.Uint64(data[8:16])
 	floatValue := math.Float64frombits(value)
 
+	buf := xlsbCellBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer xlsbCellBufferPool.Put(buf)
+
 	if floatValue == float64(int64(floatValue)) {
-		return fmt.Sprintf("%d", int64(floatValue))
+		buf.Write(strconv.AppendInt(buf.Bytes()[:0], int64(floatValue), 10))
+	} else {
+		buf.Write(strconv.AppendFloat(buf.Bytes()[:0], floatValue, 'g', -1, 64))
 	}
-	return fmt.Sprintf("%g", floatValue)
+	return buf.String()
 }
 
 func (p *XlsbParser) parseCellBoolFast(data []byte) string {

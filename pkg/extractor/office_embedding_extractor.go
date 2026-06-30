@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,13 +66,8 @@ func (e *OfficeEmbeddingExtractor) ExtractFromOfficeFile(reader *zip.ReadCloser,
 
 // extractFromBinFile 从.bin文件中提取内容
 func (e *OfficeEmbeddingExtractor) extractFromBinFile(binFile *zip.File, content *strings.Builder, depth int) error {
-	f, err := binFile.Open()
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	binData, err := io.ReadAll(f)
+	// 用 readZipEntryBytes 替代 io.ReadAll：自动复用 zipEntryBufferPool + bufioReaderPool
+	binData, err := readZipEntryBytes(binFile)
 	if err != nil {
 		return err
 	}
@@ -238,13 +232,8 @@ func (e *OfficeEmbeddingExtractor) extractFromPdfBin(binData []byte, binFileName
 
 // extractFromOfficeEmbedding 从Office内嵌文件中提取内容
 func (e *OfficeEmbeddingExtractor) extractFromOfficeEmbedding(embeddingFile *zip.File, content *strings.Builder, depth int) error {
-	f, err := embeddingFile.Open()
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	embeddingData, err := io.ReadAll(f)
+	// 用 readZipEntryBytes 替代 io.ReadAll：避免一次性 100MB docx 整文件入内存
+	embeddingData, err := readZipEntryBytes(embeddingFile)
 	if err != nil {
 		return err
 	}
@@ -283,13 +272,8 @@ func (e *OfficeEmbeddingExtractor) extractFromOfficeEmbedding(embeddingFile *zip
 
 // extractPackageContent 从package文件中提取内容
 func (e *OfficeEmbeddingExtractor) extractPackageContent(packageFile *zip.File, content *strings.Builder, sourceName string, depth int) error {
-	f, err := packageFile.Open()
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	packageData, err := io.ReadAll(f)
+	// 用 readZipEntryBytes 替代 io.ReadAll：池化避免反复分配
+	packageData, err := readZipEntryBytes(packageFile)
 	if err != nil {
 		return err
 	}

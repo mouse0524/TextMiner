@@ -47,24 +47,11 @@ func NewArchiveExtractor(archiveType string) *ArchiveExtractor {
 
 // Extract 提取压缩包内容
 func (e *ArchiveExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult, error) {
-	fileInfo, err := os.Stat(filePath)
-	fileSize := int64(0)
-	if err == nil {
-		fileSize = fileInfo.Size()
+	ctx, err := prepareExtractContext(filePath)
+	if err != nil {
+		return newFileAccessErrorResult(filePath), fmt.Errorf("文件不存在或无法访问")
 	}
-
-	detector := GetFileTypeDetector()
-	_, mimeType, err := detector.GetDetailedInfo(filePath)
-	if err != nil || mimeType == "" {
-		mimeType = resolveMimeType(filePath)
-	}
-
-	result := &ExtractResult{
-		FileName: filepath.Base(filePath),
-		FileType: mimeType,
-		FileSize: fileSize,
-		Status:   StatusSuccess,
-	}
+	result := newSuccessResult(ctx, "")
 
 	files, err := e.extractArchive(filePath, 0)
 	if err != nil {
@@ -151,12 +138,11 @@ func (e *ArchiveExtractor) extractZip(filePath string, depth int) ([]ArchiveFile
 		}
 
 		// SafeReadZipEntry 内置 Zip Slip 校验与 Zip Bomb 防护
-		safeName, content, err := SafeReadZipEntry(file, &totalUncompressed)
+		_, content, err := SafeReadZipEntry(file, &totalUncompressed)
 		if err != nil {
 			logger.Warnf("跳过压缩包内文件 %s: %v", file.Name, err)
 			continue
 		}
-		_ = safeName
 
 		archiveFile := ArchiveFile{
 			Name:     file.Name,
@@ -694,38 +680,45 @@ func (e *ArchiveExtractor) isPrintableASCII(s string) bool {
 	return printableCount*10 >= len(sample)*8
 }
 
-// detectFileType 根据文件内容检测文件类型
+// detectFileType 根据文件内容（magic bytes）检测文件类型。
+// 仅在 filename 没有扩展名时由 extractFileContent 调用：扩展名场景已在调用方优先处理。
+// 文档格式（OOXML = zip）无法靠 magic bytes 与普通 zip 区分，对无扩展名文件统一返回 "zip"，
+// 后续 NewExtractorByType 会按 zip 处理；调用方仍可基于内容再次回退到文本/二进制。
 func (e *ArchiveExtractor) detectFileType(content []byte, fileName string) string {
 	if len(content) < 10 {
 		return ""
 	}
 
-	// 检测tar文件
+	// tar magic: "ustar" at offset 257
 	if len(content) >= 262 && string(content[257:262]) == "ustar" {
 		return "tar"
 	}
 
-	// 检测ZIP文件
+	// ZIP / OOXML (.docx/.xlsx/.pptx 共享 PK\x03\x04 magic)
 	if len(content) >= 4 && content[0] == 'P' && content[1] == 'K' && content[2] == 0x03 && content[3] == 0x04 {
 		return "zip"
 	}
 
-	// 检测PDF文件
+	// PDF magic: "%PDF"
 	if len(content) >= 4 && content[0] == '%' && content[1] == 'P' && content[2] == 'D' && content[3] == 'F' {
 		return "pdf"
 	}
 
-	// 检测DOC文件
+	// OLE2 magic (legacy DOC/XLS/PPT): D0 CF 11 E0 A1 B1 1A E1
 	if len(content) >= 8 && content[0] == 0xD0 && content[1] == 0xCF && content[2] == 0x11 && content[3] == 0xE0 && content[4] == 0xA1 && content[5] == 0xB1 && content[6] == 0x1A && content[7] == 0xE1 {
 		return "doc"
 	}
 
-	// 检测DOCX文件
-	if len(content) >= 4 && content[0] == 'P' && content[1] == 'K' && content[2] == 0x03 && content[3] == 0x04 {
-		return "docx"
+	// 7z magic: 37 7A BC AF 27 1C
+	if len(content) >= 6 && content[0] == 0x37 && content[1] == 0x7A && content[2] == 0xBC && content[3] == 0xAF && content[4] == 0x27 && content[5] == 0x1C {
+		return "7z"
 	}
 
-	// 检测文本文件
+	// RAR magic: 52 61 72 21 1A 07
+	if len(content) >= 6 && content[0] == 'R' && content[1] == 'a' && content[2] == 'r' && content[3] == '!' && content[4] == 0x1A && content[5] == 0x07 {
+		return "rar"
+	}
+
 	if e.isPrintableASCII(string(content)) {
 		return "txt"
 	}
@@ -1073,7 +1066,7 @@ func (e *ArchiveExtractor) extractIso(filePath string, depth int) ([]ArchiveFile
 	return files, nil
 }
 
-// getFileSize 获取文件大小
+// getFileSize 获取文件大小（已知文件存在时不应再次 Stat；仅供子函数兜底使用）
 func (e *ArchiveExtractor) getFileSize(filePath string) int64 {
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {
@@ -1196,15 +1189,17 @@ func (e *ArchiveExtractor) extractTarBz2(filePath string, depth int) ([]ArchiveF
 	return files, nil
 }
 
+// archiveExtMap 压缩包扩展名 O(1) 查询表：避免 isArchiveFile 内部 O(N) 线性扫描。
+// 与 file_type_detector.go 中的 officeExtensionsMap / imageExtensionsMap 同模式。
+var archiveExtMap = map[string]bool{
+	".zip": true, ".7z": true, ".rar": true, ".tar": true,
+	".gz": true, ".tgz": true, ".tar.gz": true, ".bz2": true,
+	".xz": true, ".tar.xz": true, ".tar.bz2": true, ".rpm": true, ".iso": true,
+}
+
 // isArchiveFile 判断是否为压缩包文件
 func (e *ArchiveExtractor) isArchiveFile(ext string) bool {
-	archiveExts := []string{".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".tar.gz", ".bz2", ".xz", ".tar.xz", ".tar.bz2", ".rpm", ".iso"}
-	for _, archiveExt := range archiveExts {
-		if ext == archiveExt {
-			return true
-		}
-	}
-	return false
+	return archiveExtMap[ext]
 }
 
 // Bz2Extractor BZ2提取器

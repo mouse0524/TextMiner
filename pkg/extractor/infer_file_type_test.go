@@ -4,9 +4,9 @@ import "testing"
 
 func TestInferFileTypeFromMime(t *testing.T) {
 	tests := []struct {
-		name  string
-		mime  string
-		want  string
+		name string
+		mime string
+		want string
 	}{
 		{"audio-mp3", "audio/mpeg", "mp3"},
 		{"audio-wav", "audio/wav", "wav"},

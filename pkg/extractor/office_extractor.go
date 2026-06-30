@@ -96,18 +96,12 @@ func extractDocxContent(filePath string, reader *zip.ReadCloser, enableOcr bool)
 			continue
 		}
 
-		f, err := file.Open()
-		if err != nil {
-			return "", fmt.Errorf("读取文档内容失败: %w", err)
-		}
-
-		data, err := io.ReadAll(f)
-		f.Close()
+		raw, err := readZipEntryText(file)
 		if err != nil {
 			return "", fmt.Errorf("读取文件数据失败: %w", err)
 		}
 
-		text := extractTextFromXML(data)
+		text := extractTextFromXML([]byte(raw))
 		content.WriteString(text)
 		content.WriteString("\n")
 	}
@@ -253,18 +247,12 @@ func extractVisioContent(filePath string, enableOcr bool) (string, error) {
 			continue
 		}
 
-		f, err := file.Open()
+		raw, err := readZipEntryText(file)
 		if err != nil {
 			continue
 		}
 
-		data, err := io.ReadAll(f)
-		f.Close()
-		if err != nil {
-			continue
-		}
-
-		text := extractTextFromXML(data)
+		text := extractTextFromXML([]byte(raw))
 		content.WriteString(text)
 		content.WriteString("\n")
 	}
@@ -424,13 +412,7 @@ func parseSharedStringsFromZip(reader *zip.ReadCloser) map[int]string {
 }
 
 func extractSheetContent(file *zip.File, sharedStrings map[int]string) string {
-	f, err := file.Open()
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-
-	data, err := io.ReadAll(f)
+	data, err := readZipEntryBytes(file)
 	if err != nil {
 		return ""
 	}
@@ -444,16 +426,11 @@ func extractFallbackXlsxContent(reader *zip.ReadCloser, content *strings.Builder
 			continue
 		}
 
-		f, err := file.Open()
+		raw, err := readZipEntryText(file)
 		if err != nil {
 			continue
 		}
-
-		data, err := io.ReadAll(f)
-		f.Close()
-		if err != nil {
-			continue
-		}
+		data := []byte(raw)
 
 		text := extractTextFromXMLTags(data, "<v>", "</v>")
 		if text != "" {
@@ -716,8 +693,10 @@ func (e *VsdExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult,
 		return newFileAccessErrorResult(filePath), fmt.Errorf("文件不存在或无法访问")
 	}
 
-	return newErrorResult(ctx, "VSD文件格式不支持（需要安装Microsoft Visio或转换为VSX格式）"),
-		fmt.Errorf("VSD文件格式不支持（需要安装Microsoft Visio或转换为VSX格式）")
+	const msg = "VSD binary format not supported in this build (use VSX or convert via Visio)"
+	result := newErrorResult(ctx, msg)
+	result.Status = StatusSkipped
+	return result, fmt.Errorf("%s", msg)
 }
 
 // XlsbExtractor XLSB文件提取器
@@ -774,25 +753,22 @@ func extractPPTXContentWithCache(filePath string, enableOcr bool) (string, error
 	var content strings.Builder
 	content.Grow(estimatedSize)
 
-	var slideFiles []*zip.File
+	// 经验值：PPTX 中 slide 占 reader.File 总数的 ~25%；预分配避免反复 grow。
+	slideFiles := make([]*zip.File, 0, len(reader.File)/4)
 	for _, file := range reader.File {
 		if strings.HasPrefix(file.Name, "ppt/slides/slide") && strings.HasSuffix(file.Name, ".xml") {
 			slideFiles = append(slideFiles, file)
 		}
 	}
 
-	type slideResult struct {
-		text string
-		err  error
-	}
-
-	// 使用 errgroup 限制并发到 NumCPU*2，替换裸 goroutine + resultChan 模式
+	// 预分配结果切片 + 按下标并发写入：消除 slideResult/resultChan/close goroutine 三件套。
+	// errgroup.SetLimit 控制并发度为 NumCPU*2，panic 由 recover 局部捕获避免拖垮整批。
+	results := make([]string, len(slideFiles))
 	eg, _ := errgroup.WithContext(context.Background())
 	eg.SetLimit(runtime.NumCPU() * 2)
-	resultChan := make(chan slideResult, len(slideFiles))
 
-	for _, slideFile := range slideFiles {
-		slideFile := slideFile
+	for i, slideFile := range slideFiles {
+		i, slideFile := i, slideFile
 		eg.Go(func() error {
 			defer func() {
 				if r := recover(); r != nil {
@@ -800,34 +776,19 @@ func extractPPTXContentWithCache(filePath string, enableOcr bool) (string, error
 				}
 			}()
 
-			f, err := slideFile.Open()
+			raw, err := readZipEntryText(slideFile)
 			if err != nil {
-				resultChan <- slideResult{err: err}
 				return nil
 			}
-			defer f.Close()
-
-			data, err := io.ReadAll(f)
-			if err != nil {
-				resultChan <- slideResult{err: err}
-				return nil
-			}
-
-			text := extractTextFromPPTXXML(data)
-			resultChan <- slideResult{text: text}
+			results[i] = extractTextFromPPTXXML([]byte(raw))
 			return nil
 		})
 	}
+	_ = eg.Wait()
 
-	// 等待所有 goroutine 完成
-	go func() {
-		_ = eg.Wait()
-		close(resultChan)
-	}()
-
-	for result := range resultChan {
-		if result.err == nil && result.text != "" {
-			content.WriteString(decodeHTMLEntities(result.text))
+	for _, text := range results {
+		if text != "" {
+			content.WriteString(decodeHTMLEntities(text))
 			content.WriteString("\n")
 		}
 	}
@@ -837,13 +798,7 @@ func extractPPTXContentWithCache(filePath string, enableOcr bool) (string, error
 			continue
 		}
 
-		f, err := file.Open()
-		if err != nil {
-			continue
-		}
-
-		excelData, err := io.ReadAll(f)
-		f.Close()
+		excelData, err := readZipEntryBytes(file)
 		if err != nil {
 			continue
 		}
@@ -862,16 +817,11 @@ func extractPPTXContentWithCache(filePath string, enableOcr bool) (string, error
 				continue
 			}
 
-			xf, err := excelFile.Open()
+			rawXML, err := readZipEntryText(excelFile)
 			if err != nil {
 				continue
 			}
-
-			xmlData, err := io.ReadAll(xf)
-			xf.Close()
-			if err != nil {
-				continue
-			}
+			xmlData := []byte(rawXML)
 
 			text := extractTextFromXMLTags(xmlData, "<v>", "</v>")
 			if text != "" {

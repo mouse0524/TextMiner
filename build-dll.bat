@@ -31,11 +31,8 @@ set RANLIB=%MINGW32_PATH%\bin\ranlib.exe
 set PATH=%MINGW32_PATH%\bin;%PATH%
 
 set CGO_CFLAGS=-DWINVER=0x0601 -D_WIN32_WINNT=0x0601 -D_WIN32_WINDOWS=0x0601 -DNTDDI_VERSION=0x06010000 -O2 -march=i686 -D_FILE_OFFSET_BITS=64
-set CGO_LDFLAGS=-static-libgcc -static-libstdc++ %CD%/cmd/TextMiner/dll_bootstrap.o -L%CD%/lib/x86 -lonnxruntime
+set CGO_LDFLAGS=-static-libgcc -static-libstdc++ -L%CD%/lib/x86 -lonnxruntime
 set LDFLAGS=-s -w
-
-if exist %CD%/cmd/TextMiner/dll_bootstrap.o del /F /Q %CD%/cmd/TextMiner/dll_bootstrap.o >nul 2>&1
-gcc -c %CD%/cmd/TextMiner/dll_bootstrap.c -o %CD%/cmd/TextMiner/dll_bootstrap.o -O2 -march=i686
 
 go build -buildmode=c-shared -o "%BUILD_DIR%\x86\TextMiner.dll" ./cmd/TextMinerdll
 
@@ -61,11 +58,8 @@ set RANLIB=%MINGW64_PATH%\bin\ranlib.exe
 set PATH=%MINGW64_PATH%\bin;%PATH%
 
 set CGO_CFLAGS=-DWINVER=0x0601 -D_WIN32_WINNT=0x0601 -D_WIN32_WINDOWS=0x0601 -DNTDDI_VERSION=0x06010000 -O2 -D_FILE_OFFSET_BITS=64
-set CGO_LDFLAGS=-static-libgcc -static-libstdc++ %CD%/cmd/TextMiner/dll_bootstrap.o -L%CD%/lib/x64 -lonnxruntime
+set CGO_LDFLAGS=-static-libgcc -static-libstdc++ -L%CD%/lib/x64 -lonnxruntime
 set LDFLAGS=-s -w
-
-if exist %CD%/cmd/TextMiner/dll_bootstrap.o del /F /Q %CD%/cmd/TextMiner/dll_bootstrap.o >nul 2>&1
-gcc -c %CD%/cmd/TextMiner/dll_bootstrap.c -o %CD%/cmd/TextMiner/dll_bootstrap.o -O2
 
 go build -buildmode=c-shared -o "%BUILD_DIR%\x64\TextMiner.dll" ./cmd/TextMinerdll
 

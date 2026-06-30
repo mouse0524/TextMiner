@@ -38,7 +38,7 @@ func makeTestZip(t *testing.T, name string, files map[string][]byte) string {
 
 func TestArchiveExtractor_NormalZip(t *testing.T) {
 	zipPath := makeTestZip(t, "normal.zip", map[string][]byte{
-		"hello.txt":  []byte("Hello World"),
+		"hello.txt":   []byte("Hello World"),
 		"sub/foo.txt": []byte("nested content"),
 	})
 
