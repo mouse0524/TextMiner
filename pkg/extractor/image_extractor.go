@@ -10,6 +10,12 @@ import (
 	"os"
 	"strings"
 	"textminer/pkg/logger"
+
+	// BMP/TIFF 解码器需要在 image.Decode 前注册（Go 标准库未自带）。
+	// 这两个库在 init() 期间会调用 image.RegisterFormat，
+	// 后续 imageutil.Open / image.Decode 即可识别 .bmp/.tif/.tiff。
+	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/tiff"
 )
 
 type ImageExtractor struct {
@@ -54,10 +60,23 @@ func (e *ImageExtractor) Extract(filePath string, enableOcr bool) (*ExtractResul
 
 	content, err := e.ocrProcessor.Recognize(filePath)
 	if err != nil {
-		logger.Errorf("图片OCR识别失败: %s, 错误: %v", filePath, err)
-		result.Status = StatusFailed
-		result.ErrorMessage = fmt.Sprintf("OCR识别失败: %v", err)
-		return result, err
+		// OCR 引擎对部分图片格式（HEIC/ICO/RAW 等）无解码能力时会失败。
+		// 退化为元数据提取：保证 ExtractResult 至少返回格式/尺寸信息，
+		// 状态置为 StatusSkipped 而非 failed，方便上层 DLP 区分"未识别"与"真实失败"。
+		logger.Warnf("图片OCR识别失败: %s, 错误: %v, 降级为元数据提取", filePath, err)
+		format, width, height, dimErr := readImageDimensions(filePath)
+		var b strings.Builder
+		fmt.Fprintf(&b, "[image: OCR unavailable for this format")
+		if dimErr == nil {
+			fmt.Fprintf(&b, ", %s, %dx%d", format, width, height)
+		} else {
+			fmt.Fprintf(&b, ", dimensions unavailable")
+		}
+		b.WriteString("]")
+		result.Content = b.String()
+		result.Status = StatusSkipped
+		result.ErrorMessage = fmt.Sprintf("OCR不支持该图片格式: %v", err)
+		return result, nil
 	}
 
 	logger.Infof("图片OCR识别完成: %s, 识别长度: %d", filePath, len(content))

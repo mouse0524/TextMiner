@@ -2,6 +2,8 @@ package extractor
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -188,6 +190,36 @@ const (
 	FileTypeTiff     = "tiff"
 	FileTypeTif      = "tif"
 	FileTypeWebp     = "webp"
+	// 较常见的图片扩展名
+	FileTypeJpe  = "jpe"
+	FileTypeIco  = "ico"
+	FileTypeSvg  = "svg"
+	FileTypePsd  = "psd"
+	FileTypeHeic = "heic"
+	FileTypeHeif = "heif"
+	FileTypeTga  = "tga"
+	FileTypePcx  = "pcx"
+	FileTypeJp2  = "jp2"
+	FileTypeJpx  = "jpx"
+	// 较冷门但仍常见的图像扩展名
+	FileTypeCur  = "cur"
+	FileTypeDds  = "dds"
+	FileTypeExr  = "exr"
+	FileTypeEps  = "eps"
+	FileTypeIff  = "iff"
+	FileTypeJpf  = "jpf"
+	FileTypeJng  = "jng"
+	FileTypeMng  = "mng"
+	FileTypePbm  = "pbm"
+	FileTypePcd  = "pcd"
+	FileTypePgm  = "pgm"
+	FileTypePnm  = "pnm"
+	FileTypePpm  = "ppm"
+	FileTypePsb  = "psb"
+	FileTypePxr  = "pxr"
+	FileTypeSct  = "sct"
+	FileTypeWbmp = "wbmp"
+	FileTypeXpm  = "xpm"
 )
 
 // SupportedFileTypes 支持的文件类型列表
@@ -393,6 +425,34 @@ var SupportedFileTypes = map[string]bool{
 	FileTypeTiff:     true,
 	FileTypeTif:      true,
 	FileTypeWebp:     true,
+	FileTypeJpe:      true,
+	FileTypeIco:      true,
+	FileTypeSvg:      true,
+	FileTypePsd:      true,
+	FileTypeHeic:     true,
+	FileTypeHeif:     true,
+	FileTypeTga:      true,
+	FileTypePcx:      true,
+	FileTypeJp2:      true,
+	FileTypeJpx:      true,
+	FileTypeCur:      true,
+	FileTypeDds:      true,
+	FileTypeExr:      true,
+	FileTypeEps:      true,
+	FileTypeIff:      true,
+	FileTypeJpf:      true,
+	FileTypeJng:      true,
+	FileTypeMng:      true,
+	FileTypePbm:      true,
+	FileTypePcd:      true,
+	FileTypePgm:      true,
+	FileTypePnm:      true,
+	FileTypePpm:      true,
+	FileTypePsb:      true,
+	FileTypePxr:      true,
+	FileTypeSct:      true,
+	FileTypeWbmp:     true,
+	FileTypeXpm:      true,
 }
 
 // mimeToExtMap 反向 map：MIME 类型 -> 优先扩展名。O(1) 查表替代原先的 100+ case switch。
@@ -455,6 +515,26 @@ var mimeToExtMap = map[string]string{
 	"video/mp4":                     "mp4",
 	"application/x-mscompress-szdd": "mscompress",
 	"application/winhlp":            "hlp",
+}
+
+// FileTypeMetadataOnly 哨兵文件类型：表示"已识别 MIME 但无内容提取器"，
+// dispatcher 会把这类文件路由到 MetadataOnlyExtractor，仅返回文件元数据。
+const FileTypeMetadataOnly = "metadata_only"
+
+// IsFileTypeRecognized 检查扩展名是否能识别出有意义的 MIME（用于区分
+// "已知类型但无内容提取器"和"完全未知类型"，前者走 MetadataOnlyExtractor）。
+func IsFileTypeRecognized(fileType string) bool {
+	if fileType == "" {
+		return false
+	}
+	if SupportedFileTypes[fileType] {
+		return true
+	}
+	if _, ok := extToMimeMap[fileType]; ok {
+		mime := extToMimeMap[fileType]
+		return mime != "" && mime != "application/octet-stream"
+	}
+	return false
 }
 
 // inferFileTypeFromMime 根据MIME类型推断文件类型（O(1) map 查表）。
@@ -554,12 +634,19 @@ func NewExtractorByType(fileType string) (Extractor, error) {
 		return NewIsoExtractor(), nil
 	case FileTypePgp:
 		return &PgpExtractor{}, nil
-	case FileTypePng, FileTypeJpg, FileTypeJpeg, FileTypeBmp, FileTypeGif, FileTypeTiff, FileTypeTif, FileTypeWebp:
+	case FileTypePng, FileTypeJpg, FileTypeJpeg, FileTypeBmp, FileTypeGif, FileTypeTiff, FileTypeTif, FileTypeWebp,
+		FileTypeJpe, FileTypeIco, FileTypeSvg, FileTypePsd, FileTypeHeic, FileTypeHeif,
+		FileTypeTga, FileTypePcx, FileTypeJp2, FileTypeJpx,
+		FileTypeCur, FileTypeDds, FileTypeExr, FileTypeEps, FileTypeIff, FileTypeJpf,
+		FileTypeJng, FileTypeMng, FileTypePbm, FileTypePcd, FileTypePgm, FileTypePnm,
+		FileTypePpm, FileTypePsb, FileTypePxr, FileTypeSct, FileTypeWbmp, FileTypeXpm:
 		return NewImageExtractor()
 	case "mscompress", "hlp":
-		return &UnsupportedExtractor{fileType: fileType}, nil
+		return &MetadataOnlyExtractor{}, nil
+	case FileTypeMetadataOnly:
+		return &MetadataOnlyExtractor{}, nil
 	default:
-		return &UnsupportedExtractor{fileType: fileType}, nil
+		return &MetadataOnlyExtractor{}, nil
 	}
 }
 
@@ -700,6 +787,67 @@ type UnsupportedExtractor struct {
 	fileType string
 }
 
+// MetadataOnlyExtractor 把"已识别类型但无内容提取器"的文件退化为元数据返回。
+// 状态置为 Skipped 而非 failed，方便上层 DLP 区分"未识别"与"真实失败"。
+type MetadataOnlyExtractor struct{}
+
+func (e *MetadataOnlyExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult, error) {
+	ctx, err := prepareExtractContext(filePath)
+	if err != nil {
+		return newFileAccessErrorResult(filePath), fmt.Errorf("文件不存在或无法访问")
+	}
+	result := newSuccessResult(ctx, "")
+
+	info, err := os.Stat(filePath)
+	if err != nil {
+		result.Status = StatusSkipped
+		result.ErrorMessage = fmt.Sprintf("无法获取文件信息: %v", err)
+		return result, nil
+	}
+
+	mimeType := MapExtensionToMimeType(strings.TrimPrefix(strings.ToLower(ctx.Ext), "."))
+
+	// 计算 SHA-256：仅在文件 ≤ 64MB 时计算，避免大文件拖累 DLP 扫描
+	const hashLimitBytes = 64 * 1024 * 1024
+	var sha256Hex string
+	if info.Size() <= hashLimitBytes {
+		if h, hashErr := computeFileSHA256(filePath); hashErr == nil {
+			sha256Hex = h
+		} else {
+			logger.Warnf("计算 SHA-256 失败: %s, 错误: %v", filePath, hashErr)
+		}
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "[file metadata]\n")
+	fmt.Fprintf(&b, "name: %s\n", info.Name())
+	fmt.Fprintf(&b, "size: %d bytes\n", info.Size())
+	fmt.Fprintf(&b, "type: %s\n", mimeType)
+	fmt.Fprintf(&b, "modified: %s\n", info.ModTime().Format("2006-01-02 15:04:05"))
+	if sha256Hex != "" {
+		fmt.Fprintf(&b, "sha256: %s\n", sha256Hex)
+	}
+	result.Content = b.String()
+	result.Status = StatusSkipped
+	result.ErrorMessage = "此文件类型已识别但无内容提取器，仅返回元数据"
+	return result, nil
+}
+
+// computeFileSHA256 流式计算文件 SHA-256，避免 io.ReadAll 把大文件全装入内存。
+func computeFileSHA256(filePath string) (string, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 func (e *UnsupportedExtractor) Extract(filePath string, enableOcr bool) (*ExtractResult, error) {
 	ctx, err := prepareExtractContext(filePath)
 	if err != nil {
@@ -813,6 +961,14 @@ func extractFileDetect(ctx *ExtractContext) (fileType, mimeType string, isEncryp
 	}
 
 	if !IsFileTypeSupported(fileType) {
+		// MIME 已知但无内容提取器（如 apk/3dm/blend 等"其他"格式）：
+		// 不应硬性失败，而应路由到 MetadataOnlyExtractor 返回元数据。
+		// 这样上层 DLP 可以区分"未识别"与"真实失败"。
+		if IsFileTypeRecognized(fileType) {
+			logger.Infof("已识别类型但无内容提取器，路由到 metadata_only: %s", fileType)
+			fileType = FileTypeMetadataOnly
+			return
+		}
 		logger.Warnf("不支持的文件类型: %s (检测到的类型)", fileType)
 		err = errors.New("文件类型不支持")
 		return

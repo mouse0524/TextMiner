@@ -15,6 +15,33 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// suppressStdout 把 os.Stdout 指向 io.DevNull 并返回恢复函数。
+// unipdf 社区版在每次调用时会把许可警告打到 stdout，污染 JSON 输出。
+// 调用方 defer restore() 即可。
+func suppressStdout() (restore func(), err error) {
+	orig := os.Stdout
+	devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		return func() {}, err
+	}
+	os.Stdout = devnull
+	return func() {
+		devnull.Close()
+		os.Stdout = orig
+	}, nil
+}
+
+// extractWithStdoutSuppressed 包住 extractor.ExtractFile 调 unipdf 时不污染 stdout。
+func extractWithStdoutSuppressed(filePath string, enableOcr bool) (*extractor.ExtractResult, error) {
+	restore, err := suppressStdout()
+	if err != nil {
+		// 退化：stdout 重定向失败，仍尝试提取（输出可能被 unipdf 污染）
+		return extractor.ExtractFile(filePath, enableOcr)
+	}
+	defer restore()
+	return extractor.ExtractFile(filePath, enableOcr)
+}
+
 var (
 	version      = "v1.0.0"
 	enableOcr    bool
@@ -48,8 +75,8 @@ var (
 
 			startTime := time.Now()
 
-			// 提取文件内容
-			result, err := extractor.ExtractFile(filePath, enableOcr)
+			// 提取文件内容（重定向 stdout 抑制 unipdf 等库的 stdout 污染）
+			result, err := extractWithStdoutSuppressed(filePath, enableOcr)
 			if err != nil {
 				logger.Errorf("提取文件失败: %s, 错误: %v", absPath, err)
 			}

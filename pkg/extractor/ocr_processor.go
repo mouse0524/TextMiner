@@ -48,8 +48,17 @@ func GetOcrProcessor() (*OcrProcessor, error) {
 }
 
 func NewOcrProcessor() (*OcrProcessor, error) {
-	baseDir := filepath.Join(filepath.Dir(os.Args[0]), "models")
-	libDir := filepath.Join(filepath.Dir(os.Args[0]), "lib")
+	exePath, err := os.Executable()
+	if err != nil {
+		exePath = os.Args[0]
+	}
+	exeDir, err := filepath.Abs(filepath.Dir(exePath))
+	if err != nil {
+		return nil, fmt.Errorf("解析可执行文件目录失败: %w", err)
+	}
+
+	baseDir := filepath.Join(exeDir, "models")
+	libDir := filepath.Join(exeDir, "lib")
 
 	config := ocr.Config{
 		OnnxRuntimeLibPath: filepath.Join(libDir, "onnxruntime.dll"),

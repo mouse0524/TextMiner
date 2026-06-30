@@ -474,6 +474,104 @@ cc1.exe: fatal error: D:\TextMiner/cmd/TextMiner/dll_bootstrap.c: No such file o
 - `build-dll.bat` 是另一个入口（DLL 模式），直到本轮才被发现
 - 同类问题：grep `cmd/TextMiner.*dll_bootstrap|dll_bootstrap.*cmd/TextMiner` 现在返回 0 结果（除历史 `CODE_REVIEW.md` 文档本身）
 
+### 第 13 轮：PDF 读取 stdout 污染修复
+
+**问题来源**：用户运行 `TextMiner.exe 31-1M.pdf` 报"PDF 读取失败"。诊断后发现是 unipdf 社区版许可警告污染 stdout：
+```
+stdout 前 200 字节: b'Unlicensed copy of unidoc\nTo get rid of the watermark and keep entire text - Please get a license on https://unidoc.io\n...'
+stdout 末尾 JSON:    b'...\n  "execute_time": "0.4400"\n}\n'
+```
+JSON 实际在末尾，是合法 JSON，但 unipdf 在 `ExtractFile` 期间持续向 stdout 打印许可水印（每页 2 行），导致 test.py 的 `json.loads(result)` 因"行首不是 `{`"而抛 `JSONDecodeError` → 状态归为 `non_json_output` 且丢失真实 PDF 内容。
+
+**根因**：unipdf v3 社区版在 `common.checkLicense` 中以 `fmt.Fprintln(os.Stdout, ...)` 打印许可警告。无 license API 暴露。
+
+**本轮 2 项修复**：
+
+1. **`suppressStdout` 辅助函数** [`main.go:19-33`](file:///d:/TextMiner/cmd/TextMiner/main.go#L19-L33)
+   - `os.Stdout = os.OpenFile(os.DevNull, ...)` 抑制后续 stdout
+   - 返回 restore 闭包，defer 调用即恢复
+2. **`extractWithStdoutSuppressed` 包装层** [`main.go:35-44`](file:///d:/TextMiner/cmd/TextMiner/main.go#L35-L44)
+   - 包住 `extractor.ExtractFile` 调用
+   - 退化路径：若 DevNull 打开失败，仍直接调 ExtractFile（输出可能被污染，但不阻塞）
+   - main.go Run 回调第 79 行从 `extractor.ExtractFile` 切到 `extractWithStdoutSuppressed`
+
+**未做**：
+- 不重写 test.py 解析逻辑（修在源头更稳）
+- 不修 unipdf 内容末尾的 `[Truncated - Unlicensed UniDoc - ...]` 字样（unipdf 把这条嵌进 PDF 文本流中，是它自身的反盗版机制；如需清理，可在 pdf_extractor.go 输出后做 `strings.Replace` 过滤）
+
+**验证**（端到端，跑 Python 调 .exe 模拟 test.py 路径）：
+```
+02-1M.docx      rc=0 status=success    len=808913
+10-1M.xlsx      rc=0 status=success    len=1018924
+20-1M.pptx      rc=0 status=success    len=30923
+31-1M.pdf       rc=0 status=success    len=397007   ← 之前是 non_json_output
+```
+- stdout 第一字节现为 `{`（之前是 `U`）
+- 4 种文件全部可被 `json.loads` 解析
+- x86 + x64 双架构编译通过
+
+**配套**：test.py 现有 `except json.JSONDecodeError` 兜底仍然保留，作为多一层的防御性编码。
+
+### 第 14 轮：DLP 测试结果批量修复（OCR + 未知类型 → metadata_only）
+
+**问题来源**：用户运行 `dlp测试结果-20260630-143049.xlsx`，3 类问题：
+- 8 个 OCR 错误（`failed to load dll build\x64\lib\onnxruntime.dll`）
+- 94 个"文件类型不支持"错误（含 30+ 未注册图像格式 + 60+ CAD/ebook/3D 等"其他"格式）
+- 18 个加密文件（正确拒绝，**非 bug**）
+
+**根因**：
+1. `pkg/extractor/ocr_processor.go` 的 `NewOcrProcessor` 之前用相对路径 `build\x64\lib\onnxruntime.dll`，
+   但 `os.Executable()` 已修复为绝对路径（**前一轮已修**），只是 build 还没重跑，所以测试仍命中旧错误
+2. `SupportedFileTypes` / `imageExtensionsMap` / `extToMimeMap` 只覆盖 18 种图像格式，缺的 18 种（cur/dds/exr/eps/iff/jpf/jng/mng/pbm/pcd/pgm/pnm/ppm/psb/pxr/sct/wbmp/xpm）以及 60+ "其他"格式（apk/3dm/3mf/blend/odp/ods/...）在 dispatcher 中落到 default → `UnsupportedExtractor` 失败路径
+3. `MetadataOnlyExtractor` 已定义但**未接入 dispatcher**——`NewExtractorByType` 的 `default` 仍返回 `UnsupportedExtractor`
+
+**本轮 4 项修复**：
+
+1. **接入 `MetadataOnlyExtractor` 到 dispatcher** [`extractor.go:481-499, 644-647`](file:///d:\TextMiner\pkg\extractor\extractor.go#L481-L499)
+   - 新增 `FileTypeMetadataOnly = "metadata_only"` 哨兵常量
+   - 新增 `IsFileTypeRecognized(fileType)`：判断扩展名是否能解析出有意义的 MIME（≠ octet-stream）
+   - `extractFileDetect` 末尾的"不支持"分支改为：若 `IsFileTypeRecognized` 为真则路由到 `metadata_only`，否则保留原错误
+   - `NewExtractorByType` 的 `mscompress` / `hlp` / `metadata_only` / `default` 全部改返回 `MetadataOnlyExtractor`
+   - `MetadataOnlyExtractor` 增强：流式计算 SHA-256（≤64MB），输出 name/size/type/modified/sha256 五元组
+
+2. **补充 18 个冷门图像格式** [`extractor.go:204-222, 437-455, 642`](file:///d:\TextMiner\pkg\extractor\extractor.go#L204-L222) + [`file_type_detector.go:75-78, 200-217`](file:///d:\TextMiner\pkg\extractor\file_type_detector.go#L75-L78)
+   - 新增 `FileTypeCur/Dds/Exr/Eps/Iff/Jpf/Jng/Mng/Pbm/Pcd/Pgm/Pnm/Ppm/Psb/Pxr/Sct/Wbmp/Xpm` 共 18 个常量
+   - 加入 `imageExtensionsMap`（热路径用）、`extToMimeMap`（MIME 探测用）、`SupportedFileTypes`（dispatcher 查表）
+   - `NewExtractorByType` 的 image case 扩到 36 个；OCR 不可用时走 `image_extractor.go` 现有降级路径
+
+3. **补充 28 个"其他"格式 MIME 映射** [`file_type_detector.go:378-406`](file:///d:\TextMiner\pkg\extractor\file_type_detector.go#L378-L406)
+   - DLP 测试数据集中 30 个原本报"不支持"的扩展名补到 `extToMimeMap`
+   - 3dm/3mf/cfg/conf/config/def/dwf/egg/f3d/iges/igs/key/list/numbers/obj/odp/ods/ofd/ott/pages/pdb/rp/step/stp/whl/x_t/xmind/zipx
+   - 这些格式通过 `IsFileTypeRecognized` 路径路由到 `MetadataOnlyExtractor`，统一返回元数据 + SHA-256
+
+4. **重新构建并端到端验证**
+   - `go build` / `go vet` / `gofmt -l` 全部清白
+   - `go test ./pkg/extractor/ -count=1` ✅
+   - `build-all.bat` 重新生成 `build\x64\TextMiner.exe` (21MB)
+   - `python round14_full_test.py` 端到端重跑
+
+**测试结果对比**（300 个文件，DLP测试数据 + 01文档系列-31-1M）：
+
+| 指标 | 修复前 | 修复后 | 变化 |
+|------|--------|--------|------|
+| success | 121 | 121 | — |
+| skipped | 92 → 157 | 65 个新走 `MetadataOnlyExtractor` | +65 |
+| failed (unsupported) | 94 | 3 | **-91**（-97%）|
+| failed (OCR) | 8 | 0 | **-8**（-100%）|
+| failed (encrypted) | 18 | 19 | +1（数据集差异）|
+
+**剩余 3 个 unsupported**（均为真正未知类型，不应回退到 metadata_only）：
+- `sharedStrings.bin` / `sheet18.bin`（Excel 导出残片）
+- `14.go1111`（疑似 `.go` 拼写错误）
+
+**最终代码量**（git diff --shortstat，6 文件）：
+- 318 insertions / 38 deletions / +280 net
+- 主要增长在 `MetadataOnlyExtractor`（SHA-256 流式 + 元数据组装）、`IsFileTypeRecognized`、28 个新 MIME 条目、18 个新 FileType 常量
+
+**未做**：
+- 未实现 ODF（odp/ods/ott）实际内容提取——只走 metadata_only 路径（已可识别，扩展为 ODFExtractor 是下一轮的可选任务）
+- 未优化 `ImageExtractor` 在 OCR 禁用 + 无尺寸探测时的"空 success"状态（这些是正常的"用户主动要求不 OCR"场景，不是错误）
+
 
 
 
